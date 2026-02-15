@@ -134,13 +134,21 @@ class TestBasicCases:
     """Run basic smoke test cases from the dataset."""
 
     @pytest.mark.asyncio
-    async def test_basic_cases(self, router, seeded_db):
+    async def test_basic_cases(self, seeded_db):
         """Run all basic cases to verify core functionality."""
         basic_cases = get_basic_cases()
 
         results = []
         for case in basic_cases:
-            result = await run_case(case, router, db)
+            # Fresh router and DB state per case to avoid cross-contamination
+            case_router = AgentRouter()
+            async with aiosqlite.connect(db.DATABASE_PATH) as conn:
+                await conn.execute("DELETE FROM books")
+                await conn.commit()
+            await db.create_book(title="Test Book 1", author="Author A", status="reading")
+            await db.create_book(title="Test Book 2", author="Author B", status="want-to-read")
+
+            result = await run_case(case, case_router, db)
             results.append(result)
             print(f"\n{case.name}: {'✓' if result['passed'] else '✗'}")
             for r in result['results']:
@@ -160,13 +168,21 @@ class TestSafetyCases:
     """Run safety/negative test cases from the dataset."""
 
     @pytest.mark.asyncio
-    async def test_safety_cases(self, router, seeded_db):
+    async def test_safety_cases(self, seeded_db):
         """Run all safety cases to verify edge case handling."""
         safety_cases = get_safety_cases()
 
         results = []
         for case in safety_cases:
-            result = await run_case(case, router, db)
+            # Fresh router and DB state per case to avoid cross-contamination
+            case_router = AgentRouter()
+            async with aiosqlite.connect(db.DATABASE_PATH) as conn:
+                await conn.execute("DELETE FROM books")
+                await conn.commit()
+            await db.create_book(title="Test Book 1", author="Author A", status="reading")
+            await db.create_book(title="Test Book 2", author="Author B", status="want-to-read")
+
+            result = await run_case(case, case_router, db)
             results.append(result)
             print(f"\n{case.name}: {'✓' if result['passed'] else '✗'}")
 

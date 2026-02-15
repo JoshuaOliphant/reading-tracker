@@ -21,6 +21,10 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 import aiosqlite
+from dotenv import load_dotenv
+
+# Load .env so ANTHROPIC_API_KEY is available for LLM-graded evals
+load_dotenv()
 
 # Ensure app module is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))

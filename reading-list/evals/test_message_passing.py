@@ -11,6 +11,8 @@ These tests verify the message-passing paradigm works correctly:
 4. Message log captures all inter-agent communication
 """
 
+import json
+
 import pytest
 import pytest_asyncio
 import aiosqlite

@@ -80,24 +80,60 @@ SQLite database and JSON in `data/`:
 
 ## Evaluations
 
-Following [Anthropic's eval guide](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
+Comprehensive eval suite following [Anthropic's eval guide](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents).
+
+### Running Evals
 
 ```bash
-# Basic tool usage tests
-uv run pytest evals/test_tool_usage.py -v
+# All evals (graders + transcript unit tests run fast; agent tests take ~20min)
+uv run pytest evals/ -v
 
-# Consistency tests with pass@k/pass^k metrics
+# Grader and transcript unit tests (fast, no LLM calls)
+uv run pytest evals/test_graders.py evals/test_transcript.py -v
+
+# Tool usage and consistency
+uv run pytest evals/test_tool_usage.py -v
 uv run pytest evals/test_tool_consistency.py -v -s
 
-# Run single scenario
-uv run pytest "evals/test_tool_consistency.py::TestListBooksConsistency::test_list_books_consistency[basic_show]" -v -s
+# Negative test cases (what agent should NOT do)
+uv run pytest evals/test_negative_cases.py -v -s
+
+# Complex multi-step tasks with partial credit scoring
+uv run pytest evals/test_complex_tasks.py -v -s
+
+# LLM-graded subjective quality evals (requires ANTHROPIC_API_KEY in .env)
+uv run pytest evals/test_llm_graded.py -v -s
+
+# Dataset-driven evals from declarative case definitions
+uv run pytest evals/test_dataset_driven.py -v -s
+
+# LLM grader calibration (standalone script, not pytest)
+uv run python evals/calibrate_llm_grader.py
+
+# Enable transcript capture to disk
+CAPTURE_TRANSCRIPTS=1 uv run pytest evals/test_tool_usage.py -v -s
 ```
 
-Eval principles:
+### Eval Architecture
+
+| Component | File(s) | Purpose |
+|-----------|---------|---------|
+| **Transcript Capture** | `evals/transcript.py` | Records tool calls, agent messages, DB state before/after, timing |
+| **Reusable Graders** | `evals/graders.py` | `StateCheck`, `ToolWasCalled`, `ToolNotCalled`, `HTMLContains`, `PartialCredit`, `CompositeGrader` |
+| **Declarative Cases** | `evals/datasets/crud_cases.py` | `Case` and `Dataset` classes for data-driven test definitions |
+| **LLM Grading** | `evals/test_llm_graded.py` | Claude-based subjective quality assessment with calibration examples |
+| **Calibration** | `evals/calibrate_llm_grader.py` | Validates LLM grader against 10 hand-labeled examples (target: >90% agreement) |
+| **Shared Fixtures** | `evals/conftest.py` | DB isolation, router instances, transcript capture, `.env` loading |
+
+### Eval Principles
+
 - **State-based outcomes**: Verify database state, not agent UI claims
 - **Tool usage verification**: Assert tools are actually called, not just plausible UI generated
-- **pass@k**: Probability of at least 1 success across k trials
-- **pass^k**: Probability ALL k trials succeed (reliability metric for production)
+- **pass@k / pass^k**: Reliability metrics across k trials (configurable via `EVAL_TRIALS` env)
+- **Negative testing**: Verify agent asks for clarification, doesn't hallucinate, doesn't expose internals
+- **Partial credit**: Multi-step tasks scored 0.0-1.0 with weighted steps, not just pass/fail
+- **LLM grading**: Subjective quality (tone, helpfulness, accessibility) graded by Claude with calibrated rubrics
+- **Per-test isolation**: Fresh database state per test via `clean_db`/`seeded_db` fixtures
 
 ## Key Patterns
 

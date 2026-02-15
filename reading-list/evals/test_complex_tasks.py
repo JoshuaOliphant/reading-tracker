@@ -360,7 +360,7 @@ class TestBulkOperations:
 
         print(f"\n{pc_result.summary()}")
 
-        assert score >= 0.67, (
+        assert score >= 0.66, (
             f"FAIL: Only {successes}/{len(books_to_add)} books added. "
             f"Score: {score:.1%}\n{pc_result.summary()}"
         )

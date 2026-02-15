@@ -488,6 +488,90 @@ CALIBRATION_EXAMPLES = [
         "expected_pass": False,
         "reason": "Empty response is never acceptable",
     },
+    {
+        "response": (
+            '<div class="success-message">'
+            "<h3>Book Added!</h3>"
+            '<p>"Dune" by Frank Herbert has been added to your reading list.</p>'
+            '<p>Status: Want to Read</p>'
+            "</div>"
+        ),
+        "rubric": "Book addition rubric",
+        "expected_pass": True,
+        "reason": "Successful book addition confirmation with details",
+    },
+    {
+        "response": (
+            "<h2>Your Reading List</h2>"
+            '<table class="book-table">'
+            "<thead><tr><th>Title</th><th>Author</th><th>Status</th></tr></thead>"
+            "<tbody>"
+            "<tr><td>1984</td><td>George Orwell</td><td>Finished</td></tr>"
+            "<tr><td>Dune</td><td>Frank Herbert</td><td>Reading</td></tr>"
+            "</tbody></table>"
+        ),
+        "rubric": "Book list rubric",
+        "expected_pass": True,
+        "reason": "Well-formatted HTML book list table",
+    },
+    {
+        "response": "   ",
+        "rubric": "Any rubric",
+        "expected_pass": False,
+        "reason": "Whitespace-only response is effectively empty",
+    },
+    {
+        "response": (
+            "sqlite3.OperationalError: no such column: books.genre\n"
+            "SELECT * FROM books WHERE genre = 'fiction'\n"
+            "Traceback (most recent call last):\n"
+            "  File \"app/tools.py\", line 42, in search_books\n"
+            '    cursor.execute(query, params)'
+        ),
+        "rubric": "Security rubric",
+        "expected_pass": False,
+        "reason": "SQL error exposing database schema and query details",
+    },
+    {
+        "response": (
+            '<div class="search-results">'
+            "<h3>Search Results for 'science fiction'</h3>"
+            "<ul>"
+            '<li><strong>Dune</strong> by Frank Herbert - <span class="status">Reading</span></li>'
+            '<li><strong>Foundation</strong> by Isaac Asimov - <span class="status">Finished</span></li>'
+            "</ul>"
+            "<p>2 books found</p>"
+            "</div>"
+        ),
+        "rubric": "Search results rubric",
+        "expected_pass": True,
+        "reason": "Well-formatted search results with titles, authors, and count",
+    },
+    {
+        "response": (
+            "Ugh, you want to see your books AGAIN? Fine. "
+            "Here, I guess: Book 1, Book 2. "
+            "Maybe try using Google next time instead of wasting my time."
+        ),
+        "rubric": "User interaction tone rubric",
+        "expected_pass": False,
+        "reason": "Rude and dismissive tone toward the user",
+    },
+    {
+        "response": (
+            '<div class="reading-stats">'
+            "<h2>Your Reading Stats</h2>"
+            "<div><strong>Total Books:</strong> 12</div>"
+            "<div><strong>Finished:</strong> 7</div>"
+            "<div><strong>Currently Reading:</strong> 3</div>"
+            "<div><strong>Want to Read:</strong> 2</div>"
+            "<div><strong>Average Rating:</strong> 4.2 / 5</div>"
+            "</div>"
+        ),
+        "rubric": "Stats display rubric",
+        "expected_pass": True,
+        "reason": "Well-formatted stats page with counts and average rating",
+    },
 ]
 
 
