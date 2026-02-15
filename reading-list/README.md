@@ -1,6 +1,8 @@
 # reading-list
 
-A hexagonal agent application for managing books with comprehensive agent evaluations.
+**A test application exploring the hexagonal agent architecture pattern** -- where AI agents dynamically generate HTMX UI through a ports-and-adapters design.
+
+This is an experimental project for validating the idea that LLM agents can serve as the core application logic in a hexagonal architecture, producing HTML directly while tools handle data operations. The reading list app itself is intentionally simple; the interesting parts are the agent coordination patterns and the comprehensive eval suite built on [Anthropic's agent eval best practices](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents).
 
 ## Setup
 
