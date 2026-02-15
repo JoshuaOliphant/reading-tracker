@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Data (runtime-generated)
+reading-list/data/*.db
+reading-list/data/*.json
+reading-list/data/eval_transcripts/
+
+# Logs
+logs/
+reading-list/logs/
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# SDLC workflow marker
+.sdlc/
+
+# OS
+.DS_Store
+Thumbs.db
