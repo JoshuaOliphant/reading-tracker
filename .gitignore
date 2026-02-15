@@ -22,13 +22,12 @@ venv/
 .env.local
 
 # Data (runtime-generated)
-reading-list/data/*.db
-reading-list/data/*.json
-reading-list/data/eval_transcripts/
+data/*.db
+data/*.json
+data/eval_transcripts/
 
 # Logs
 logs/
-reading-list/logs/
 
 # Caches
 .pytest_cache/

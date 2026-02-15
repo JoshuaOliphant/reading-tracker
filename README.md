@@ -1,4 +1,4 @@
-# reading-list
+# reading-tracker
 
 **A test application exploring the hexagonal agent architecture pattern** -- where AI agents dynamically generate HTMX UI through a ports-and-adapters design.
 
@@ -135,7 +135,7 @@ uv run mypy app/
 ## Project Structure
 
 ```
-reading-list/
+reading-tracker/
 ├── app/
 │   ├── agents/          # Multi-agent system
 │   ├── skills/          # Agent personality/prompt files
