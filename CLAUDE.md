@@ -2,13 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Commands
+## Environment Setup
+
+GitHub: https://github.com/JoshuaOliphant/reading-tracker
 
 ```bash
 # Install dependencies
 uv sync
 
-# Run the application (requires ANTHROPIC_API_KEY in .env or exported)
+# Create .env file with your API key (required for app and LLM-graded evals)
+echo "ANTHROPIC_API_KEY=your_key_here" > .env
+```
+
+## Commands
+
+```bash
+# Run the application (must run from repo root — data/ path is relative)
 uv run uvicorn app.main:app --reload
 
 # Run all tests
@@ -85,33 +94,20 @@ Comprehensive eval suite following [Anthropic's eval guide](https://www.anthropi
 ### Running Evals
 
 ```bash
-# All evals (graders + transcript unit tests run fast; agent tests take ~20min)
+# All evals (~20min with agent tests, or fast subset below)
 uv run pytest evals/ -v
 
 # Grader and transcript unit tests (fast, no LLM calls)
 uv run pytest evals/test_graders.py evals/test_transcript.py -v
 
-# Tool usage and consistency
-uv run pytest evals/test_tool_usage.py -v
-uv run pytest evals/test_tool_consistency.py -v -s
-
-# Negative test cases (what agent should NOT do)
-uv run pytest evals/test_negative_cases.py -v -s
-
-# Complex multi-step tasks with partial credit scoring
-uv run pytest evals/test_complex_tasks.py -v -s
-
-# LLM-graded subjective quality evals (requires ANTHROPIC_API_KEY in .env)
-uv run pytest evals/test_llm_graded.py -v -s
-
-# Dataset-driven evals from declarative case definitions
-uv run pytest evals/test_dataset_driven.py -v -s
+# Individual eval suites (see Eval Architecture table for file purposes)
+uv run pytest evals/test_<suite>.py -v -s
 
 # LLM grader calibration (standalone script, not pytest)
 uv run python evals/calibrate_llm_grader.py
 
 # Enable transcript capture to disk
-CAPTURE_TRANSCRIPTS=1 uv run pytest evals/test_tool_usage.py -v -s
+CAPTURE_TRANSCRIPTS=1 uv run pytest evals/ -v -s
 ```
 
 ### Eval Architecture
@@ -141,3 +137,11 @@ CAPTURE_TRANSCRIPTS=1 uv run pytest evals/test_tool_usage.py -v -s
 - **Agents output raw HTML** (skill files enforce "never use markdown code fences")
 - **HTMX attributes** (`hx-post`, `hx-target`, `hx-vals`, `hx-indicator`) drive UI interactions
 - **Tool responses** are structured JSON; agents transform data into HTML presentation
+- **Async-first**: All database and agent code uses `async`/`await`; tests use `@pytest.mark.asyncio` (no auto mode configured)
+
+## Gotchas
+
+- **CWD matters**: `DATABASE_PATH = Path("data/reading_list.db")` is relative — app and tests must run from repo root
+- **`python-dotenv` is a transitive dep**: Used in `app/main.py` and `evals/conftest.py` but comes through `uvicorn[standard]`, not declared directly. If the dep chain changes, `load_dotenv()` will break silently
+- **LLM-graded evals fail silently without API key**: `llm_grade()` returns a default pass when `ANTHROPIC_API_KEY` is missing — tests appear green but skip actual grading. Always check `.env` is loaded
+- **State isolation in agent evals**: Each eval case needs a fresh `AgentRouter()` and clean DB state — agents retain conversational context across calls to `process_user_message()`
