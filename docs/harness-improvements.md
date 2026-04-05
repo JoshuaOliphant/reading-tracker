@@ -11,6 +11,40 @@ robustness*: what happens when things go wrong, get slow, or get expensive.
 The hexagonal pattern tells us *where* to put harness concerns; harness
 engineering tells us *which* concerns to put there.
 
+**Reference**: Sebastian Raschka, ["Components of a Coding Agent"](https://magazine.sebastianraschka.com/p/components-of-a-coding-agent)
+(April 2025). See [docs/raschka-coding-agent-components.md](raschka-coding-agent-components.md)
+for a structured summary.
+
+---
+
+## Raschka's Six Components vs. This Project
+
+Before diving into specific improvements, here is how Raschka's six canonical
+harness components map onto what this project already has and what it lacks.
+
+| # | Raschka Component | This Project Has | This Project Lacks |
+|---|---|---|---|
+| 1 | **Live Repo Context** | N/A (not a coding agent, but analogous: the DB *is* our "repo") | No workspace summary injected into prompts. Agents don't see a snapshot of the current reading list state before reasoning. |
+| 2 | **Prompt Shape & Cache Reuse** | Skill files provide a stable prefix; agent awareness prompt is generated once at connect time. | No explicit prompt caching strategy. System prompt is rebuilt on every `_ensure_connected()` call. No separation of stable vs. changing parts at the SDK level. |
+| 3 | **Tool Access & Use** | Strong. MCP server with 7 named tools + `message_agent`. Validation in tools. `allowed_tools` whitelist per agent. | No approval gating (all tools auto-approved via `permission_mode="acceptEdits"`). No path/scope validation beyond basic input checks. |
+| 4 | **Context Bloat Minimization** | `MessageLog` truncates responses to 500 chars for logging. | No clipping of tool outputs before they reach the LLM. No transcript compaction. No deduplication of repeated `list_books` results. No token budget tracking. |
+| 5 | **Structured Session Memory** | Conversation history lives implicitly inside `ClaudeSDKClient`. `MessageLog` captures inter-agent messages. | No persistent session files. No working memory vs. transcript separation. No cross-session resumption. No explicit "what matters now" distillation. |
+| 6 | **Delegation & Bounded Subagents** | Multi-agent delegation via `message_agent` tool. Router mediates all inter-agent calls. | Subagents are full agents with identical permissions -- no read-only mode, no recursion depth limit, no task scoping. An insights agent could theoretically call `message_agent` to UI which calls insights again (infinite loop). |
+
+### What This Mapping Reveals
+
+The project is strongest on **Component 3** (tool access) -- the hexagonal
+architecture naturally produces clean tool boundaries. It is weakest on
+**Components 4 and 5** (context management and session memory), which are
+the components Raschka identifies as most underrated:
+
+> "A lot of apparent 'model quality' is really context quality."
+
+The hexagonal pattern gives excellent *structural* separation but doesn't
+inherently address *temporal* concerns: how state evolves across turns, how
+context grows and must be compacted, how sessions persist and resume. These
+are the harness engineering concerns that complement the hexagonal bones.
+
 ---
 
 ## 1. Resilience: Retries, Timeouts, and Circuit Breakers
@@ -523,16 +557,53 @@ return _error("Database timeout", kind="transient", retryable=True)
 
 ## Summary: Priority Order
 
-| # | Improvement | Effort | Impact | Why This Order |
-|---|---|---|---|---|
-| 1 | **Resilience** (timeouts + retries) | Low | High | Users currently get hung requests or raw 500s |
-| 2 | **Output validation** | Low | Medium | Prevents broken UI from reaching the browser |
-| 3 | **Observability** (timing + traces) | Medium | High | Can't improve what you can't measure |
-| 4 | **Error taxonomy** | Low | Medium | Enables smarter retry and error UX |
-| 5 | **Context management** | Medium | Medium | Prevents degradation in long sessions |
-| 6 | **Self-correction loops** | Medium | Medium | Improves complex query handling |
-| 7 | **Dynamic registry** | Low | Low | Completes the hexagonal decoupling |
-| 8 | **Cross-session memory** | High | High | Transforms recommendation quality |
+| # | Improvement | Raschka Component | Effort | Impact | Why This Order |
+|---|---|---|---|---|---|
+| 1 | **Resilience** (timeouts + retries) | -- (operational) | Low | High | Users currently get hung requests or raw 500s |
+| 2 | **Output validation** | 3 (Tool Access) | Low | Medium | Prevents broken UI from reaching the browser |
+| 3 | **Observability** (timing + traces) | -- (operational) | Medium | High | Can't improve what you can't measure |
+| 4 | **Error taxonomy** | 3 (Tool Access) | Low | Medium | Enables smarter retry and error UX |
+| 5 | **Context management** | 4 (Context Bloat) | Medium | Medium | Prevents degradation in long sessions |
+| 6 | **Self-correction loops** | 3 (Tool Access) | Medium | Medium | Improves complex query handling |
+| 7 | **Dynamic registry** | 6 (Delegation) | Low | Low | Completes the hexagonal decoupling |
+| 8 | **Cross-session memory** | 5 (Session Memory) | High | High | Transforms recommendation quality |
+
+### Unmapped Raschka Components (New Work Needed)
+
+The eight improvements above don't fully cover two of Raschka's components.
+These need dedicated work:
+
+**Component 1: Live Repo Context (adapted as "Live Data Context")**
+
+This project's "repo" is the SQLite database. Before the LLM reasons about
+anything, the harness should inject a compact data snapshot:
+
+```
+You are managing a reading list with 12 books:
+- 3 want-to-read, 4 reading, 5 finished
+- Average rating: 4.2 (8 rated)
+- Most recent addition: "Dune" (2 days ago)
+```
+
+**Where**: `app/agents/ui_agent.py` in `_build_system_prompt()`. Call
+`get_stats` at prompt-build time and append a `## Current Reading List State`
+section to the system prompt. This is cheap (one DB query) and gives the LLM
+grounding before it even sees the user's message.
+
+**Component 2: Prompt Shape and Cache Reuse**
+
+Currently `_ensure_connected()` rebuilds the system prompt and creates a new
+MCP server on every reconnection. The prompt has a natural stable/changing
+split:
+
+- **Stable**: skill file content, tool descriptions, agent awareness
+- **Changing**: data snapshot (Component 1), working memory (Component 5)
+
+**Where**: `app/agents/base_agent.py`. Separate `_build_stable_prefix()` from
+`_build_dynamic_context()`. At the SDK level, if `ClaudeSDKClient` supports
+prompt caching (prefix stability), ensure the stable prefix is provided as a
+cacheable block. Even without SDK support, this separation clarifies which
+parts of the prompt are worth optimizing.
 
 ---
 
@@ -544,6 +615,17 @@ The hexagonal architecture and harness engineering are complementary lenses:
   core. It prevents spaghetti.
 - **Harness** answers *"what concerns must exist?"* -- resilience, observability,
   context, guardrails. It prevents fragility.
+
+Raschka's framing adds a third lens:
+
+- **Coding harness** answers *"what does the model need to succeed?"* -- live
+  context, compact prompts, validated tools, managed history, persistent
+  memory, bounded delegation.
+
+The hexagonal pattern is strong on Component 3 (tool boundaries) and
+Component 6 (delegation via message passing). It is weak on Components 4-5
+(context and memory), which are temporal concerns that the spatial
+port/adapter model doesn't naturally address.
 
 This project has strong hexagonal bones. The improvements above fill in the
 harness flesh: making the system not just well-structured, but robust,
