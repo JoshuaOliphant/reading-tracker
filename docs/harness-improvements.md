@@ -49,10 +49,80 @@ are the harness engineering concerns that complement the hexagonal bones.
 
 ## Agent SDK Features: Build vs. Built-In
 
-The project uses `claude-agent-sdk` v0.1.22, but only a fraction of its
-surface. Many harness concerns proposed below as custom code already have
-SDK-level support. This section catalogs what the SDK provides so we can
-decide what to **build** vs. what to **adopt**.
+The project uses `claude-agent-sdk` **v0.1.22** (locked in `uv.lock`).
+The latest release is **v0.1.56** (April 4, 2026) -- **34 versions behind**.
+
+Many harness concerns proposed below as custom code already have SDK-level
+support, and many more features have been added since v0.1.22. This section
+catalogs what the SDK provides so we can decide what to **build** vs. what
+to **adopt**.
+
+### New Features Added Since v0.1.22
+
+These features were not available when the project was built. Upgrading
+unlocks them.
+
+| Version | Feature | Harness Relevance |
+|---|---|---|
+| **v0.1.52** | **`get_context_usage()`** -- query context window usage by category | **Context Bloat (Raschka 4)**: Know exactly how full the context window is. Trigger compaction or summarization based on actual usage, not turn counts. |
+| **v0.1.52** | **`session_id` option** in `ClaudeAgentOptions` | **Session Memory (Raschka 5)**: Resume specific sessions by ID. |
+| **v0.1.52** | **`typing.Annotated`** for per-parameter tool descriptions | **Tool Access (Raschka 3)**: Better tool schemas for the LLM. |
+| **v0.1.51** | **`fork_session()`**, **`delete_session()`**, offset pagination | **Session Memory (Raschka 5)**: Fork conversations for A/B testing. Clean up old sessions. |
+| **v0.1.51** | **`task_budget`** option for token budget management | **Context Bloat (Raschka 4)**: Fine-grained token budget per task. |
+| **v0.1.51** | **`AgentDefinition` new fields**: `disallowedTools`, `maxTurns`, `initialPrompt` | **Delegation (Raschka 6)**: Better subagent scoping. Limit subagent turns. Send initial context. |
+| **v0.1.50** | **`get_session_info()`**, `tag`/`created_at` on sessions | **Session Memory (Raschka 5)**: Rich session metadata. |
+| **v0.1.49** | **`AgentDefinition` new fields**: `skills`, `memory`, `mcpServers` | **Delegation (Raschka 6)**: Subagents can have their own skill files, memory, and MCP servers. This is a big deal -- each subagent becomes a fully independent harness. |
+| **v0.1.49** | **Per-turn `usage` on `AssistantMessage`** | **Observability**: Token counts per turn, not just per session. |
+| **v0.1.49** | **`RateLimitEvent`** typed message | **Resilience**: Detect rate limits in the response stream. |
+| **v0.1.49** | **`tag_session()`**, **`rename_session()`** | **Session Memory (Raschka 5)**: Organize and label sessions. |
+| **v0.1.48** | **Fine-grained tool streaming** (`input_json_delta` events) | **Observability**: Watch tool inputs being composed in real-time. |
+| **v0.1.46** | **`list_sessions()`**, **`get_session_messages()`** | **Session Memory (Raschka 5)**: Query past sessions programmatically. |
+| **v0.1.46** | **`add_mcp_server()`**, **`remove_mcp_server()`**, `McpServerStatus` | **Tool Access (Raschka 3)**: Dynamic MCP server management at runtime. |
+| **v0.1.46** | **Typed task messages**: `TaskStarted`, `TaskProgress`, `TaskNotification` | **Delegation (Raschka 6)**: Track subagent progress with typed events. |
+| **v0.1.46** | **`stop_reason` on `ResultMessage`** | **Resilience**: Know why the agent stopped (end_turn, max_turns, etc.). |
+| **v0.1.46** | **Hook enhancements**: `agent_id`, `agent_type` in tool hooks | **Observability**: Distinguish which agent triggered a tool call. |
+| **v0.1.36** | **`thinking` config** (`ThinkingConfigAdaptive`, etc.) | **Quality**: Control extended thinking behavior per agent. |
+| **v0.1.36** | **`effort` option** ("low", "medium", "high", "max") | **Quality + Cost**: Trade off between thoroughness and token spend. |
+| **v0.1.31** | **MCP tool annotations** (`readOnlyHint`, `destructiveHint`, etc.) | **Tool Access (Raschka 3)**: Mark tools as read-only or destructive. SDK can use this for permission decisions. |
+| **v0.1.29** | **New hook events**: `Notification`, `SubagentStart`, `PermissionRequest` | **Observability + Delegation**: Full lifecycle hooks for subagent management. |
+| **v0.1.29** | **`additionalContext` in PreToolUse output** | **Tool Access (Raschka 3)**: Inject context before tool execution. |
+| **v0.1.29** | **`updatedMCPToolOutput` in PostToolUse output** | **Tool Access (Raschka 3)**: Modify tool results before the LLM sees them. Enables output clipping. |
+| **v0.1.26** | **`PostToolUseFailure` hook** | **Resilience**: React to tool failures with custom recovery logic. |
+| **v0.1.23** | **`get_mcp_status()`** | **Tool Access (Raschka 3)**: Monitor MCP server health. |
+| **v0.1.15** | **File checkpointing and `rewind_files`** | **Resilience**: Rollback file changes on failure. |
+
+### Highlights for This Project
+
+The most impactful new features for the reading-tracker specifically:
+
+1. **`get_context_usage()`** (v0.1.52) -- Replaces custom turn-counting for
+   context management. Query actual token usage and decide when to compact.
+
+2. **`task_budget`** (v0.1.51) -- Per-task token budgets. Give the recommender
+   agent a smaller budget than the UI agent.
+
+3. **`AgentDefinition.skills` + `.memory` + `.mcpServers`** (v0.1.49) -- Each
+   SDK subagent can have its own skill file, memory directory, and MCP tools.
+   This maps almost 1:1 onto what the custom agents already do with separate
+   skill files and tool servers.
+
+4. **`updatedMCPToolOutput`** in PostToolUse hooks (v0.1.29) -- Modify tool
+   results before the LLM sees them. This is exactly what Raschka calls
+   "clipping" -- trim large `list_books` results before they bloat the context.
+
+5. **`RateLimitEvent`** (v0.1.49) + **`stop_reason`** (v0.1.46) -- Handle
+   rate limits and unexpected stops gracefully in the UI.
+
+### Upgrade Action
+
+```bash
+# Update pyproject.toml constraint
+# From: "claude-agent-sdk>=0.1.0"
+# To:   "claude-agent-sdk>=0.1.56"
+
+uv lock --upgrade-package claude-agent-sdk
+uv sync
+```
 
 ### Currently Used
 
