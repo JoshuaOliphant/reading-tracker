@@ -17,7 +17,7 @@ Harness engineering is what turns that raw context into useful agent behavior.
 
 ## Storage Architecture
 
-Three-layer model, each layer serving a distinct purpose:
+### Current: Three Independent Layers
 
 | Layer | Tool | Purpose | Status |
 |---|---|---|---|
@@ -25,19 +25,33 @@ Three-layer model, each layer serving a distinct purpose:
 | **State history** | Git (pygit2) | Snapshots, diffs, branches, undo | Implemented (`app/git_audit.py`) |
 | **Event stream** | Brooklet | Individual events, consumer groups, agent session integration | Documented, not implemented |
 
-Details: [git-as-user-state-store.md](git-as-user-state-store.md)
+### Future Vision: Unified Event Sourcing
 
-### How the layers connect
+The three layers aren't peers -- they're one source of truth and two projections:
 
 ```
-User action
-  -> SQLite (ACID write, fast query)
-  -> Git audit (snapshot + commit for diffing/undo)
-  -> Brooklet event (append for streaming/downstream triggers)  [future]
+Current:    SQLite (truth) → git (mirror) → brooklet (mirror)
+Future:     Brooklet events (truth) → SQLite (materialized view)
+                                    → Git snapshots (materialized view)
 ```
 
-Each layer is optional and fails gracefully. Git audit already degrades
-silently when pygit2 is missing.
+In this model, brooklet's JSONL event log is the only write path. SQLite
+is a **materialized view** rebuilt by replaying events (delete the `.db`,
+reconstruct from the log). Git snapshots are periodic compaction points
+for diffs and branching. Every feature currently split across three tools
+(queries, history, diffs, undo, consumer groups) maps to event primitives:
+
+- **Snapshots** = compaction (skip-to-snapshot, archive old events)
+- **Diffs** = compare event ranges or snapshots
+- **Branches** = fork the event stream
+- **Undo** = append a compensating event, reproject
+- **Queries** = SQLite projection (same `WHERE` clauses, derived state)
+
+**Evolutionary path**: add brooklet as a mirror first, verify parity, then
+gradually invert the architecture. Each step is independently useful and
+reversible.
+
+Details: [git-as-user-state-store.md](git-as-user-state-store.md) > "Option E: Unified Event Sourcing"
 
 ---
 

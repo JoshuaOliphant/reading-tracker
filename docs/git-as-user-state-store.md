@@ -575,21 +575,193 @@ Each layer is optional and fails gracefully. Start with SQLite + git
 (already implemented). Add brooklet when you want to experiment with
 event-driven agent patterns or cross-stream analytics.
 
+## Option E: Unified Event Sourcing (Brooklet as Single Source of Truth)
+
+The three-layer model above treats SQLite, git, and brooklet as peers. But
+there's a more elegant endstate: **brooklet events are the single source of
+truth**, and everything else is a derived projection.
+
+### The Insight
+
+Event sourcing done properly inverts the usual architecture:
+
+```
+Traditional (current):
+  User action → SQLite (source of truth) → git (mirror) → brooklet (mirror)
+
+Event-sourced:
+  User action → Brooklet event log (source of truth)
+                  ↓ projection
+                SQLite (materialized view for queries)
+                  ↓ projection
+                Git snapshots (materialized view for diffs/undo)
+```
+
+In this model:
+- **Brooklet JSONL** is the append-only event log. Every mutation is an event.
+  This is the only write path.
+- **SQLite** is a materialized view. It's rebuilt (or incrementally updated)
+  by replaying events. It exists purely for fast `WHERE` clauses and joins.
+  You could delete the `.db` file and reconstruct it from the event log.
+- **Git snapshots** are another materialized view. Periodic snapshots of
+  the SQLite state committed to git. These exist for structural diffs and
+  branching. You could also derive them directly from the event log.
+
+### Why This Unifies the Three Layers
+
+Every feature currently split across three tools maps to a single primitive:
+
+| Feature | Current Tool | Event-Sourced Equivalent |
+|---|---|---|
+| **Fast queries** | SQLite `SELECT` | SQLite projection (same queries, derived state) |
+| **ACID writes** | SQLite `INSERT/UPDATE` | Brooklet `produce()` + atomic projection update |
+| **Full history** | Git `log` | Brooklet event log (native -- it IS the history) |
+| **Diffs** | Git `diff` | Compare snapshots, or diff event ranges directly |
+| **Branching** | Git `branch` | Fork the event stream (copy + diverge) |
+| **Undo/rollback** | Git `revert` | Append a compensating event, reproject |
+| **Snapshots** | Git commits | Periodic snapshot events (compaction) |
+| **Consumer groups** | N/A (brooklet only) | Native -- each agent consumes independently |
+| **Agent session integration** | N/A | Glob-register Claude Code JSONL alongside app events |
+
+### Snapshots as Compaction
+
+Events can't accumulate forever. In event sourcing, **snapshots** solve this:
+
+```
+Events:  [create Dune] [rate Dune 4] [update Dune status:reading] [rate Dune 5] ...
+                                                                        ↓ snapshot
+Snapshot: {"type":"snapshot","books":[{"title":"Dune","rating":5,"status":"reading",...}]}
+Events after: [snapshot@seq=100] [finish Dune] [create Neuromancer] ...
+```
+
+To rebuild state, you find the latest snapshot and replay only the events
+after it. Old events before the snapshot can be archived or deleted.
+
+This is the same pattern as git's packfiles (delta-compress old objects)
+or Kafka's log compaction. Brooklet could support this natively:
+
+```python
+# Periodic compaction
+snapshot = await build_current_state()  # query SQLite or replay events
+stream.produce("books", {
+    "action": "snapshot",
+    "state": snapshot,
+}, source="compactor")
+
+# On startup, consumer finds latest snapshot and replays from there
+consumer = stream.consume("books", group="sqlite-projector", after="last-snapshot")
+```
+
+### Undo as Compensating Events
+
+Git revert creates a new commit that inverts a previous commit. Event
+sourcing does the same thing -- **undo is just another event**:
+
+```jsonl
+{"action":"create","book_id":1,"title":"Dune","_seq":1}
+{"action":"update","book_id":1,"updates":{"rating":5},"_seq":2}
+{"action":"undo","target_seq":2,"book_id":1,"restore":{"rating":null},"_seq":3}
+```
+
+The undo event carries enough information to reverse the original. The
+SQLite projection replays it like any other event. History is preserved
+(you can see the undo happened), but the current state reflects the rollback.
+
+### Branches as Stream Forks
+
+Git branching is "cheap copy + diverge." For events:
+
+```python
+# Fork: copy the event log up to a point, then diverge
+stream.fork("books", "books-what-if", up_to_seq=50)
+stream.produce("books-what-if", {"action": "delete", "book_id": 3})
+
+# The "what-if" branch has its own SQLite projection
+projector.rebuild("books-what-if")  # → "what if I removed book 3?"
+
+# Merge: replay divergent events from one fork onto another
+stream.merge("books-what-if", into="books", after_seq=50)
+```
+
+This is more explicit than git branching (you see exactly which events
+diverged) but less automatic (git handles merge conflicts; you'd need
+custom conflict resolution).
+
+### What Brooklet Would Need
+
+To fully support this pattern, brooklet would need a few features it
+may not have yet:
+
+| Feature | Purpose | Difficulty |
+|---|---|---|
+| **Snapshot markers** | Mark an event as a compaction point; consumers can skip-to-snapshot | Medium -- metadata flag on events + seek support |
+| **Stream forking** | Copy a topic up to a sequence number | Medium -- file copy + offset tracking |
+| **Compensating event convention** | Not a library feature, just a pattern -- but helper utilities would be nice | Low |
+| **Projection framework** | `stream.project("books", into=sqlite_db, handler=apply_event)` | High -- but very valuable; the "materialize" primitive |
+
+These are reasonable extensions. Building them exercises brooklet in
+exactly the kind of real-world event-sourcing scenario it's designed for.
+
+### The Evolutionary Path
+
+```
+Current state (implemented):
+  SQLite (truth) → git audit (mirror)
+
+Next step (add brooklet alongside):
+  SQLite (truth) → git audit (mirror) → brooklet (mirror)
+
+Future state (invert):
+  Brooklet (truth) → SQLite (projection) → git (periodic snapshots)
+```
+
+The beauty of this path: you don't have to flip the architecture all at
+once. You can add brooklet as a third mirror (the current "layered"
+approach), run both systems in parallel, verify they agree, then gradually
+shift the source of truth from SQLite to the event log.
+
+### Connection to Harness Engineering
+
+This unification maps cleanly onto Raschka's components:
+
+| Raschka Component | How Unified Events Help |
+|---|---|
+| **1. Live Repo Context** | Agent context = latest snapshot + recent events since snapshot. Compact, always fresh. |
+| **2. Prompt Shape** | Snapshot is the stable part; new events since snapshot are the changing part. Natural cache boundary. |
+| **4. Context Bloat** | Compaction via snapshots keeps the relevant window small. Old events archived, not replayed. |
+| **5. Session Memory** | The event log IS session memory. Cross-session by nature. Agent sessions (via glob-registered JSONL) sit in the same stream. |
+| **6. Delegation** | Consumer groups give each agent its own read position. The recommender can be behind the UI agent without conflict. |
+
+### Is This Production-Ready?
+
+Not yet. This is a vision for where the architecture *could* go. The
+current three-layer approach is pragmatic and working. But as a learning
+vehicle for harness engineering, the unified event-sourced model is the
+more principled target:
+
+- **One write path** (simpler to reason about, audit, debug)
+- **Derived views are disposable** (delete SQLite, rebuild from events)
+- **History is a first-class citizen** (not a mirror bolted on after)
+- **Brooklet gets real-world pressure** (snapshot compaction, projections,
+  forking -- features that would make it more than "SQLite of streaming")
+
 ## Recommendation
 
-**Start with Option B (Hybrid)** for learning. It preserves the working
-SQLite database while adding git-backed history. You learn the git-as-state
-pattern without risking the app's query performance.
+Start where we are: **SQLite (truth) + git audit (mirror)** is implemented
+and working. The next steps are:
 
-Then consider migrating to Option A once you're comfortable with pygit2
-and want to explore the full pattern (branches for "what if I drop these
-books?", diffs for "what changed this month?", merges for "combine two
-users' reading lists").
+1. **Add brooklet as a third mirror** alongside the existing layers. Emit
+   events on every mutation. Run the sqlite-projector in parallel to verify
+   it produces the same state. (This is the "layered approach" above.)
 
-Add **brooklet** when you want to explore event-driven patterns: consumer
-groups for multi-agent consumption, follow mode for real-time reactions,
-or unifying book events with Claude Code session transcripts into a
-single observable stream.
+2. **Build snapshot compaction** in brooklet. This is the key primitive
+   that makes event sourcing practical at any scale.
+
+3. **Invert the architecture** once confident: brooklet becomes the write
+   path, SQLite becomes a projection, git snapshots become periodic.
+
+This evolutionary path means you're never betting the app on unproven
+infrastructure. Each step is independently useful and reversible.
 
 ## References
 
