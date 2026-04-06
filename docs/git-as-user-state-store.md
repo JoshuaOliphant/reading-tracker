@@ -38,6 +38,107 @@ Component 1 (Live Repo Context) into the storage layer itself.
   commits) is a Merkle DAG. Every object is addressed by its SHA hash.
   This gives deduplication and integrity for free.
 
+## How Git Stores Data (Not JSONL)
+
+Git doesn't use JSONL, CSV, or any text log format. It has its own
+**content-addressable object database** with four object types, all
+stored as zlib-compressed blobs addressed by SHA-1 hash.
+
+### The Four Object Types
+
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  COMMIT  │────▶│   TREE   │────▶│   BLOB   │     │   TAG    │
+│          │     │(directory)│     │ (file)   │     │(bookmark)│
+│ metadata │     │          │     │          │     │          │
+│ message  │     │ name→sha │     │ content  │     │ name→sha │
+│ parent   │     │ name→sha │     │          │     │ message  │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+```
+
+**Blob** -- A file's raw content. No filename, no metadata. Just bytes.
+```
+blob 5374\0# reading-list\n\n**A test application...
+```
+
+**Tree** -- A directory listing. Maps filenames to blob/tree SHAs.
+```
+100644 blob d0e58d0a...  tools.py
+100644 blob bdfb1388...  database.py
+040000 tree 0bd909d0...  agents/
+```
+
+**Commit** -- A snapshot pointer + metadata. Points to a tree (the root
+directory at that moment), plus parent commit(s), author, timestamp, message.
+```
+tree 2b54848e...
+parent 82a03ba8...
+author Claude <noreply@anthropic.com> 1775441425 +0000
+committer Claude <noreply@anthropic.com> 1775441425 +0000
+
+docs: explore git as per-user state store for reading lists
+```
+
+**Tag** -- A named, annotated pointer to a commit.
+
+### On Disk
+
+Every object is stored as:
+```
+{type} {size}\0{content}  →  zlib compress  →  .git/objects/{sha[0:2]}/{sha[2:]}
+```
+
+So `.git/objects/00/f85e37f6...` is a zlib-compressed blob. Git also
+**packs** objects into `.git/objects/pack/*.pack` files for efficiency
+(delta-compressed, indexed).
+
+### Why This Matters vs. JSONL
+
+| Concern | JSONL Event Log | Git Object Store |
+|---|---|---|
+| **Deduplication** | None. Same book content repeated in every event. | Automatic. If a blob's content hasn't changed, git reuses the same SHA. A commit touching 1 of 14 books stores only 1 new blob. |
+| **Integrity** | Must add your own checksums. | Every object is SHA-addressed. Corruption is detectable. |
+| **Diffing** | Must implement yourself. | `git diff` compares any two commits structurally. |
+| **Branching** | Must copy the whole log. | Branches are just pointers (41-byte files). Nearly free. |
+| **Compression** | Must add your own. | zlib on every object + delta compression in packs. |
+| **Querying** | Fast -- just scan lines. | Slow for arbitrary queries. Need to walk tree objects. |
+| **Append speed** | Very fast -- just append a line. | Slower -- write blob, update tree, create commit. |
+| **Human readable** | Yes, plain text. | No, binary (but `git log`/`git cat-file` decode it). |
+
+**Bottom line**: JSONL is better if you need a simple, fast append log.
+Git is better if you need deduplication, branching, diffing, and
+structural integrity -- which are exactly the features that make it
+interesting as a "reading list repo."
+
+### What a Book Mutation Looks Like Internally
+
+When a user rates "Dune" 5/5, here's what git creates:
+
+```
+1. NEW BLOB: books/004-dune.json (updated content with rating: 5)
+   sha: a1b2c3d4...
+
+2. NEW TREE: books/ (same as before but 004-dune.json points to new blob)
+   sha: e5f6a7b8...
+
+3. NEW TREE: root (same as before but books/ points to new tree)
+   sha: c9d0e1f2...
+
+4. NEW COMMIT: points to new root tree + parent commit
+   sha: 1a2b3c4d...
+   message: "Rate 'Dune' 5/5"
+
+Objects REUSED (not duplicated):
+   - All other book blobs (001-neuromancer.json, etc.)
+   - preferences.json blob
+   - All unchanged tree entries
+```
+
+Only ~4 new objects for a single-field change. Everything else is shared
+by reference.
+
+---
+
 ## How It Would Work for Reading Tracker
 
 ### Data Layout (Per User)
