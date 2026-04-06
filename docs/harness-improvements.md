@@ -17,14 +17,182 @@ for a structured summary.
 
 ---
 
+## The Reading List as "Repo Context"
+
+Raschka's Component 1 -- Live Repo Context -- is about collecting "stable
+facts" about the workspace so the agent isn't starting from zero on every
+prompt. In a coding agent, this means: what repo am I in, what branch, what's
+the project structure, what docs exist.
+
+**The reading list is this project's equivalent of a code repository.**
+
+| Coding Agent Context | Reading Tracker Context |
+|---|---|
+| Git repo root, branch, status | The reading list: total books, statuses, recent changes |
+| `README.md`, `AGENTS.md` (project instructions) | User preferences: genres they like, rating patterns |
+| File tree / project layout | Book distribution: how many want-to-read vs reading vs finished |
+| Recent commits (what changed lately) | Recently added/finished books (what's active) |
+| Test results, CI status | Reading velocity: completion rate, backlog size |
+| Dependencies / tech stack | Genre/author clustering: what kinds of books dominate |
+
+### What's Missing: The "Reading List Summary"
+
+Currently, all three agents start blind. Look at what happens:
+
+**`ui_agent.py:48-65`** -- The system prompt is skill file + agent awareness +
+reminders. No data about the actual reading list. The agent must call
+`list_books` on every request just to know what books exist.
+
+**`recommender_agent.py:86-100`** -- Same pattern. The skill file says
+"use list_books to see what the user has read" -- but this means the
+recommender burns a tool call (and context tokens) on data that could have
+been pre-loaded.
+
+**`insights_agent.py:94-108`** -- The insights agent is told to "use
+list_books to get the full reading list" -- but it's analyzing patterns.
+Having the data snapshot upfront would let it start reasoning immediately
+instead of spending its first turn fetching.
+
+This is exactly Raschka's point:
+
+> "The coding agent collects info ('stable facts' as a workspace summary)
+> upfront before doing any work, so that it's not starting from zero,
+> without context, on every prompt."
+
+### What the Reading List Summary Should Look Like
+
+A compact snapshot injected into each agent's system prompt before any
+user message arrives:
+
+```
+## Current Reading List Context
+
+You are managing a reading list with 14 books:
+- Want to read: 5 books
+- Currently reading: 3 books (Dune, Project Hail Mary, Piranesi)
+- Finished: 6 books (avg rating: 4.2/5)
+
+Recently active:
+- Added "The Name of the Wind" 2 days ago
+- Finished "Neuromancer" yesterday (rated 5/5)
+- Updated "Dune" to reading status 3 days ago
+
+Top-rated books: Neuromancer (5), Hyperion (5), Left Hand of Darkness (4)
+Genres represented: sci-fi (8), fantasy (4), literary fiction (2)
+```
+
+### Why This Matters Per-Agent
+
+**UI Agent**: Knows the list size before generating HTML. Can show
+"You have 3 books in progress" without a tool call. Can size tables and
+layouts appropriately.
+
+**Recommender Agent**: Already knows what the user has read and rated.
+Can start reasoning about recommendations immediately. The tool call to
+`list_books` becomes a verification step, not a discovery step.
+
+**Insights Agent**: Has the raw data for pattern analysis in its
+system prompt. Can produce insights in fewer turns with less context
+bloat from repeated tool outputs.
+
+### Where to Build It
+
+**`app/agents/base_agent.py`** -- Add a `_build_data_context()` method:
+
+```python
+async def _build_data_context(self) -> str:
+    """Build a compact reading list summary for the system prompt.
+
+    This is the reading-tracker equivalent of a coding agent's
+    workspace summary (Raschka Component 1: Live Repo Context).
+    """
+    from app import database as db
+
+    stats = await db.get_stats()
+    books = await db.get_all_books()
+
+    if not books:
+        return "## Current Reading List Context\n\nThe reading list is empty."
+
+    # Build compact summary
+    lines = [
+        "## Current Reading List Context",
+        "",
+        f"Total: {stats['total']} books",
+        f"- Want to read: {stats['by_status']['want-to-read']}",
+        f"- Currently reading: {stats['by_status']['reading']}",
+        f"- Finished: {stats['by_status']['finished']}",
+    ]
+
+    if stats['average_rating']:
+        lines.append(f"- Average rating: {stats['average_rating']}/5 "
+                      f"({stats['rated_count']} rated)")
+
+    # Currently reading (most actionable)
+    reading = [b for b in books if b['status'] == 'reading']
+    if reading:
+        titles = ', '.join(b['title'] for b in reading[:5])
+        lines.append(f"\nCurrently reading: {titles}")
+
+    # Top rated (informs recommendations)
+    rated = sorted(
+        [b for b in books if b.get('rating')],
+        key=lambda b: b['rating'],
+        reverse=True
+    )[:3]
+    if rated:
+        top = ', '.join(f"{b['title']} ({b['rating']}/5)" for b in rated)
+        lines.append(f"Top rated: {top}")
+
+    return '\n'.join(lines)
+```
+
+**Each agent's `_build_system_prompt()`** -- Inject the data context:
+
+```python
+# In ui_agent.py, recommender_agent.py, insights_agent.py
+async def _build_system_prompt(self) -> str:
+    skill_content = self._load_skill_file()
+    agent_awareness = self._get_agent_awareness_prompt()
+    data_context = await self._build_data_context()  # NEW
+
+    return f"""{skill_content}
+
+{data_context}
+
+{agent_awareness}
+...
+"""
+```
+
+Note: This makes `_build_system_prompt()` async, which requires updating
+`_ensure_connected()` in each agent to `await` it.
+
+### The Prompt Shape Implication (Raschka Component 2)
+
+Once we have the data context, the system prompt has a clear stable/changing
+split:
+
+- **Stable per session**: skill file content, tool descriptions,
+  agent awareness prompt
+- **Stable per request, changes across requests**: reading list summary
+  (books get added/deleted between requests)
+- **Changes per turn**: conversation history (handled by SDK)
+
+The reading list summary sits in the middle -- it changes less often than
+conversation turns but more often than skill files. This is the natural
+boundary for prompt caching: cache the skill+tools prefix, and rebuild
+only the data context per request.
+
+---
+
 ## Raschka's Six Components vs. This Project
 
-Before diving into specific improvements, here is how Raschka's six canonical
-harness components map onto what this project already has and what it lacks.
+Below is the full mapping, now with Component 1 detailed above.
 
 | # | Raschka Component | This Project Has | This Project Lacks |
 |---|---|---|---|
-| 1 | **Live Repo Context** | N/A (not a coding agent, but analogous: the DB *is* our "repo") | No workspace summary injected into prompts. Agents don't see a snapshot of the current reading list state before reasoning. |
+| 1 | **Live Repo Context** | The SQLite DB is our "repo". Books, ratings, statuses are the equivalent of files, branches, commits. | No reading list summary injected into system prompts. All three agents start blind and must call `list_books`/`get_stats` as their first action every time. See detailed analysis above. |
 | 2 | **Prompt Shape & Cache Reuse** | Skill files provide a stable prefix; agent awareness prompt is generated once at connect time. | No explicit prompt caching strategy. System prompt is rebuilt on every `_ensure_connected()` call. No separation of stable vs. changing parts at the SDK level. |
 | 3 | **Tool Access & Use** | Strong. MCP server with 7 named tools + `message_agent`. Validation in tools. `allowed_tools` whitelist per agent. | No approval gating (all tools auto-approved via `permission_mode="acceptEdits"`). No path/scope validation beyond basic input checks. |
 | 4 | **Context Bloat Minimization** | `MessageLog` truncates responses to 500 chars for logging. | No clipping of tool outputs before they reach the LLM. No transcript compaction. No deduplication of repeated `list_books` results. No token budget tracking. |
@@ -268,9 +436,19 @@ These require understanding how context flows through the system. Mix of
 SDK features and custom code.
 
 **Step 4: Inject live data context** (Raschka: Live Repo Context)
-- Call `get_stats()` in `_build_system_prompt()` and append reading list summary
-- **Learn**: How workspace context improves agent responses (test with evals)
-- **Measure**: Run recommendation evals before/after; compare quality
+- Implement `_build_data_context()` in `BaseAgent` (see "Reading List as Repo
+  Context" section above for full implementation)
+- Inject reading list summary into each agent's system prompt
+- Make `_build_system_prompt()` async to support the DB query
+- **The insight**: Just as a coding agent collects git status, branch, and
+  project structure before reasoning, our agents should know the reading list
+  state before seeing the user's message. The recommender shouldn't need to
+  waste a tool call on `list_books` just to know what books exist.
+- **Learn**: How "workspace context" improves agent responses. Compare: does
+  the recommender give better results when it already knows the user's top
+  ratings vs. when it has to discover them?
+- **Measure**: Run recommendation evals before/after; compare quality and
+  tool call count (should decrease)
 
 **Step 5: Enable server-side compaction** (Raschka: Context Bloat)
 - Add `betas=["compact-2026-01-12"]` to `ClaudeAgentOptions`
