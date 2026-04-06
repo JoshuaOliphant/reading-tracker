@@ -402,6 +402,179 @@ Probably overkill for this project's learning goals.
 | **4. Context Bloat** | Git diffs are compact. Instead of dumping the full book list, show "what changed since last turn" as a diff. |
 | **5. Session Memory** | Git IS persistent memory. Cross-session by nature. The full transcript of reading activity survives restarts, resets, everything. |
 
+## Option D: Brooklet Event Streaming
+
+[Brooklet](https://github.com/JoshuaOliphant/brooklet) is a JSONL event
+streaming library ("the SQLite of event streaming") that could replace or
+complement the git audit log. Instead of git commits, every mutation
+becomes an appended JSONL event with automatic metadata.
+
+### How Brooklet Works
+
+```python
+import brooklet
+
+stream = brooklet.open("data/events")
+
+# Register external JSONL sources (or produce to local topics)
+stream.register("agent-sessions", "~/.claude/projects/**/*.jsonl", mode="glob")
+
+# Produce events
+stream.produce("reading-list", {
+    "action": "create",
+    "book": {"title": "Dune", "author": "Frank Herbert", "status": "want-to-read"}
+}, source="app")
+# Writes to data/events/reading-list/stream.jsonl:
+# {"action":"create","book":{...},"_ts":"2026-04-06T12:00:00","_seq":1,"_src":"app"}
+
+# Consume with offset tracking (picks up where it left off)
+consumer = stream.consume("reading-list", group="insights-agent", follow=True)
+for event in consumer:
+    print(event)  # Each event is a dict with _ts, _seq, _src metadata
+```
+
+### What Brooklet Gives You
+
+| Feature | How It Works |
+|---|---|
+| **Append-only JSONL** | Simple, human-readable, `grep`-able event log |
+| **Automatic metadata** | `_ts` (timestamp), `_seq` (sequence number), `_src` (producer) injected on every event |
+| **Consumer groups** | Multiple independent consumers with offset tracking. The insights agent and recommender agent could consume the same stream at different speeds. |
+| **Follow mode** | `tail -f` behavior -- consumers block waiting for new events. Could power real-time agent reactions to book changes. |
+| **Glob registration** | Register `**/*.jsonl` patterns as topics. This is how you'd consume Claude Code session transcripts (stored at `~/.claude/projects/.../*.jsonl`). |
+| **Byte-level offsets** | O(1) resume. No re-scanning the entire log on restart. |
+
+### Brooklet + Reading Tracker: What It Would Look Like
+
+```python
+# app/event_store.py
+import brooklet
+
+stream = brooklet.open("data/events")
+
+async def emit_book_created(book: dict):
+    stream.produce("books", {
+        "action": "create",
+        "book_id": book["id"],
+        "title": book["title"],
+        "author": book.get("author", ""),
+        "status": book.get("status", "want-to-read"),
+    })
+
+async def emit_book_updated(book: dict, updates: dict):
+    stream.produce("books", {
+        "action": "update",
+        "book_id": book["id"],
+        "title": book["title"],
+        "updates": updates,
+    })
+
+async def emit_book_deleted(book: dict):
+    stream.produce("books", {
+        "action": "delete",
+        "book_id": book["id"],
+        "title": book["title"],
+    })
+```
+
+The resulting JSONL in `data/events/books/stream.jsonl`:
+```jsonl
+{"action":"create","book_id":1,"title":"Dune","author":"Frank Herbert","status":"want-to-read","_ts":"2026-04-06T12:00:00","_seq":1,"_src":"app"}
+{"action":"update","book_id":1,"title":"Dune","updates":{"status":"reading"},"_ts":"2026-04-06T12:05:00","_seq":2,"_src":"app"}
+{"action":"update","book_id":1,"title":"Dune","updates":{"rating":5},"_ts":"2026-04-06T13:00:00","_seq":3,"_src":"app"}
+{"action":"update","book_id":1,"title":"Dune","updates":{"status":"finished"},"_ts":"2026-04-06T15:00:00","_seq":4,"_src":"app"}
+{"action":"delete","book_id":1,"title":"Dune","_ts":"2026-04-07T10:00:00","_seq":5,"_src":"app"}
+```
+
+### The Interesting Part: Consuming Claude Code Sessions
+
+Claude Code stores its sessions as JSONL at
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`. Brooklet can
+register these as a topic:
+
+```python
+stream.register(
+    "agent-sessions",
+    "~/.claude/projects/**/*.jsonl",
+    mode="glob"
+)
+
+# Now a downstream consumer can react to agent activity:
+for event in stream.consume("agent-sessions", group="analytics"):
+    if event.get("type") == "tool_use" and "create_book" in str(event):
+        print(f"Agent created a book at {event['_ts']}")
+```
+
+This creates a unified event stream: **book mutations AND agent activity**
+in the same system. The insights agent could consume both to say "you've
+been asking the recommender a lot this week but not adding any books --
+maybe you're having trouble finding something you like?"
+
+### Brooklet vs. Git Audit Log
+
+| Concern | Git Audit Log (implemented) | Brooklet |
+|---|---|---|
+| **Format** | Full state snapshot per commit (reading-list.json) | Individual events (one JSONL line per mutation) |
+| **Storage efficiency** | Git deduplicates via content-addressing | JSONL appends are minimal (one line per event) |
+| **Querying** | `git log`, `git diff` -- structural | `grep`, `jq`, or iterate with consumer -- linear scan |
+| **Branching/diffing** | Yes -- git's core strength | No -- append-only log, no branching |
+| **Consumer groups** | No -- single reader model | Yes -- multiple independent consumers with offsets |
+| **Follow mode** | No -- must poll for new commits | Yes -- blocks waiting for new events |
+| **Agent session integration** | No | Yes -- glob-register Claude Code JSONL files as topics |
+| **Undo/revert** | Yes -- `git revert` | No -- append a compensating event |
+| **Human readability** | `git log --oneline` is clean | `cat stream.jsonl \| jq` is clean |
+| **Dependencies** | pygit2 (C library, ~5MB) | brooklet (pure Python, tiny) |
+
+### Is This Overkill?
+
+**For the reading tracker alone?** Slightly. The git audit log already
+provides history and context. Brooklet would add consumer groups and
+follow mode, which the app doesn't currently need (single user, agents
+query on demand rather than streaming).
+
+**For learning harness engineering?** No -- it's exactly right. Here's why:
+
+1. **Event sourcing is a core harness pattern.** Raschka's Component 5
+   (Structured Session Memory) is fundamentally about event logs. Brooklet
+   makes the pattern explicit rather than hiding it inside the SDK's
+   session JSONL.
+
+2. **Consumer groups model multi-agent consumption.** The UI agent,
+   recommender, and insights agent each consuming the same book-event
+   stream at their own pace is a natural fit for the message-passing
+   architecture.
+
+3. **Unifying app events + agent events.** Brooklet can consume both
+   your custom book events AND Claude Code's session JSONL. That
+   combination -- "what happened to the data" + "what did the agents do" --
+   is powerful observability.
+
+4. **It's your own library.** Using it here exercises brooklet in a real
+   application, which is the best way to find rough edges and missing
+   features.
+
+### Recommendation: Layered Approach
+
+Use **all three** storage layers, each for its strength:
+
+| Layer | Tool | Purpose |
+|---|---|---|
+| **Query engine** | SQLite | Fast reads, ACID writes, `WHERE` clauses |
+| **State history** | Git (pygit2) | Snapshots, diffs, branches, undo |
+| **Event stream** | Brooklet | Individual events, consumer groups, agent session integration |
+
+The mutation flow:
+```
+User action
+  → SQLite (ACID write, fast query)
+  → Git audit (snapshot + commit for diffing/undo)
+  → Brooklet event (append for streaming/downstream triggers)
+```
+
+Each layer is optional and fails gracefully. Start with SQLite + git
+(already implemented). Add brooklet when you want to experiment with
+event-driven agent patterns or cross-stream analytics.
+
 ## Recommendation
 
 **Start with Option B (Hybrid)** for learning. It preserves the working
@@ -412,6 +585,11 @@ Then consider migrating to Option A once you're comfortable with pygit2
 and want to explore the full pattern (branches for "what if I drop these
 books?", diffs for "what changed this month?", merges for "combine two
 users' reading lists").
+
+Add **brooklet** when you want to explore event-driven patterns: consumer
+groups for multi-agent consumption, follow mode for real-time reactions,
+or unifying book events with Claude Code session transcripts into a
+single observable stream.
 
 ## References
 
