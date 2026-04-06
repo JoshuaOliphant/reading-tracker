@@ -13,6 +13,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
+from app.git_audit import get_audit_log
+
 DATABASE_PATH = Path("data/reading_list.db")
 
 
@@ -89,7 +91,7 @@ async def create_book(
         await db.commit()
         book_id = cursor.lastrowid
 
-    return {
+    book = {
         "id": book_id,
         "title": title,
         "author": author,
@@ -99,6 +101,9 @@ async def create_book(
         "created_at": created_at,
         "updated_at": None
     }
+
+    await get_audit_log().record_create(book)
+    return book
 
 
 async def update_book(book_id: int, **updates) -> dict | None:
@@ -137,6 +142,7 @@ async def update_book(book_id: int, **updates) -> dict | None:
         )
         await db.commit()
 
+    await get_audit_log().record_update(book, updates)
     return book
 
 
@@ -153,6 +159,7 @@ async def delete_book(book_id: int) -> dict | None:
         await db.execute("DELETE FROM books WHERE id = ?", (book_id,))
         await db.commit()
 
+    await get_audit_log().record_delete(book)
     return book
 
 
