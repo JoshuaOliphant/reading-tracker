@@ -47,7 +47,200 @@ are the harness engineering concerns that complement the hexagonal bones.
 
 ---
 
-## 1. Resilience: Retries, Timeouts, and Circuit Breakers
+## Agent SDK Features: Build vs. Built-In
+
+The project uses `claude-agent-sdk` v0.1.22, but only a fraction of its
+surface. Many harness concerns proposed below as custom code already have
+SDK-level support. This section catalogs what the SDK provides so we can
+decide what to **build** vs. what to **adopt**.
+
+### Currently Used
+
+| SDK Feature | Where Used | Notes |
+|---|---|---|
+| `ClaudeSDKClient` | All agents | `.connect()`, `.query()`, `.receive_response()`, `.disconnect()` |
+| `ClaudeAgentOptions` | All agents | `system_prompt`, `mcp_servers`, `allowed_tools`, `permission_mode` |
+| `AssistantMessage` / `TextBlock` | All agents | Response streaming and text extraction |
+| `@tool` decorator | `tools.py`, `base_agent.py` | Custom MCP tool definitions |
+| `create_sdk_mcp_server` | All agents | Bundle tools into MCP server |
+
+### Available But Unused
+
+These SDK features map directly onto harness engineering gaps:
+
+| SDK Feature | Raschka Component | Harness Gap It Addresses | How to Adopt |
+|---|---|---|---|
+| **`max_turns`** | 4 (Context Bloat) | Prevents runaway agent loops | Add `max_turns=15` to `ClaudeAgentOptions`. Prevents infinite context growth without custom turn-counting code. |
+| **`max_budget_usd`** | 4 (Context Bloat) | No cost guardrails | Add `max_budget_usd=0.50` per agent call. SDK stops the agent when budget is exhausted. Eliminates need for custom token tracking for cost control. |
+| **`model`** | -- (operational) | Hardcoded model, can't use cheaper models for subagents | Set `model="claude-haiku-4-5"` for recommender/insights agents. Use Opus for UI agent. Raschka notes: "spawn a subagent with the cheaper model for the sub-task." |
+| **`thinking`** | -- (quality) | No reasoning control | Add `thinking={"type": "adaptive"}` for complex multi-tool queries. Improves quality on recommendation and insights tasks. |
+| **`agents` (subagent definitions)** | 6 (Delegation) | Subagents have identical permissions, no scoping | Replace custom `message_agent` tool with SDK `AgentDefinition`. Each subagent gets its own `tools` list, `prompt`, and scoped permissions. SDK handles spawning and context isolation. |
+| **`hooks`** | 2 (Prompt Shape), 3 (Tools) | No tool call logging, no pre/post processing | Use `PostToolUse` hooks for observability (log every tool call with timing). Use `PreToolUse` for validation gates. Use `Stop`/`SubagentStop` for cleanup. |
+| **`AssistantMessage.usage`** | -- (observability) | No token tracking | Each `AssistantMessage` includes `usage` dict with `input_tokens`, `output_tokens`. Capture in `AgentMessage` for the debug endpoint. |
+| **`RateLimitEvent`** | 1 (Resilience) | No rate limit awareness | Handle `RateLimitEvent` in the response stream. Show "busy" UI instead of failing silently. |
+| **`TaskProgressMessage`** | -- (observability) | No subagent progress tracking | When using SDK subagents, receive cumulative usage metrics per subtask. |
+| **`output_format`** | 4 (Context Bloat) | Agent output is unstructured HTML string | Use structured output to enforce a schema (e.g., `{"html": str, "tools_called": list}`). Replaces custom output validation with SDK-level guarantees. |
+| **`resume` (session resumption)** | 5 (Session Memory) | No cross-session continuity | Capture `session_id` from `SystemMessage` on init. Store in DB. Resume with `ClaudeAgentOptions(resume=session_id)`. SDK handles full transcript replay. |
+| **`list_sessions` / `get_session_messages`** | 5 (Session Memory) | No session history | Query past sessions programmatically. Could power a "conversation history" UI feature. |
+| **`betas=["compact-2026-01-12"]`** | 4 (Context Bloat) | No context compaction | Enable server-side compaction. SDK automatically summarizes earlier context when approaching 150K tokens. **Critical**: Must append `response.content` (not just text) to preserve compaction blocks. |
+| **`context manager` (`async with`)** | 1 (Resilience) | Manual connect/disconnect lifecycle | Replace `_ensure_connected()` + manual `close()` with `async with ClaudeSDKClient(options) as client:`. Guarantees cleanup even on exceptions. |
+| **`client.interrupt()`** | 1 (Resilience) | No way to cancel a stuck agent | Use instead of timeout-then-disconnect. Cleaner cancellation. |
+| **`setting_sources`** | 1 (Live Context) | No CLAUDE.md integration | Load project-level settings/instructions automatically. |
+| **`env`** | -- (operational) | Environment config not passed to agent | Pass `ANTHROPIC_API_KEY` and other env vars explicitly. |
+| **MCP management** (`reconnect_mcp_server`, `toggle_mcp_server`, `get_mcp_status`) | 3 (Tools) | No runtime MCP server management | Monitor tool server health. Reconnect on failure instead of crashing. |
+
+### Impact on Improvement Priorities
+
+Many of the custom implementations proposed in the numbered sections below can
+be **simplified or replaced** by SDK features:
+
+| Improvement | Custom Build (Original Plan) | SDK Alternative | Recommendation |
+|---|---|---|---|
+| **1. Resilience** | Custom retry loop, circuit breaker, `asyncio.wait_for` | `max_turns`, `max_budget_usd`, `interrupt()`, `async with`, `RateLimitEvent` | **Hybrid**: Use SDK guardrails for budget/turns. Keep custom timeout at HTTP layer (`main.py`). Drop custom retry -- SDK has built-in retries for API errors. |
+| **3. Context mgmt** | Custom turn counting, manual summarization, soft reset | `betas=["compact-2026-01-12"]` for server-side compaction, `max_turns` for loop bounds | **SDK first**: Enable compaction. Only build custom summarization if compaction proves insufficient for this app's patterns. |
+| **5. Self-correction** | Custom retry-with-feedback loop | `thinking={"type": "adaptive"}` improves first-pass quality, reducing need for correction | **SDK first**: Enable adaptive thinking. Build correction loop only for specific failure modes (empty HTML). |
+| **6. Dynamic registry** | Custom `register_agent()` + dynamic tool descriptions | SDK `agents` dict with `AgentDefinition` | **SDK native**: Replace entire custom multi-agent routing with SDK subagents. The `agents` param + `Agent` tool is the SDK's built-in version of exactly what `message_agent` does manually. |
+| **7. Cross-session memory** | Custom DB table + tools | SDK `resume` for session continuity, `list_sessions` for history | **Hybrid**: Use SDK session resumption for within-app continuity. Keep custom preferences table for structured data (genre preferences, page limits) that doesn't fit in conversation context. |
+
+### The Big Architectural Question: SDK Subagents vs. Custom Message Passing
+
+The project's most distinctive feature -- the custom multi-agent message-passing
+system (`AgentRouter`, `BaseAgent`, `message_agent` tool) -- overlaps significantly
+with the SDK's built-in `agents` parameter and `Agent` tool:
+
+**Current (Custom)**:
+```python
+# router.py manually creates agents, routes messages
+router = AgentRouter()
+await router.initialize()  # creates UIAgent, RecommenderAgent, InsightsAgent
+response = await router.process_user_message(message)
+# UIAgent calls message_agent tool -> router.route_agent_message() -> target.process()
+```
+
+**SDK Native Alternative**:
+```python
+options = ClaudeAgentOptions(
+    system_prompt=ui_skill_content,
+    allowed_tools=["Read", "Glob", "Agent"] + custom_tools,
+    agents={
+        "recommender": AgentDefinition(
+            description="Book recommendations based on reading history",
+            prompt=recommender_skill_content,
+            tools=["mcp__app_tools__list_books", "mcp__app_tools__get_stats"]
+        ),
+        "insights": AgentDefinition(
+            description="Reading pattern analysis",
+            prompt=insights_skill_content,
+            tools=["mcp__app_tools__list_books", "mcp__app_tools__get_stats"]
+        ),
+    },
+    mcp_servers={"app_tools": tools_server},
+    max_turns=20,
+    max_budget_usd=1.00,
+    thinking={"type": "adaptive"},
+)
+```
+
+**Trade-offs**:
+
+| Concern | Custom Message Passing | SDK Subagents |
+|---|---|---|
+| **Learning value** | High -- teaches agent orchestration from scratch | Lower -- SDK abstracts away the routing |
+| **Observability** | Full control via `MessageLog` | SDK provides `TaskProgressMessage`, `SubagentStop` hooks |
+| **Flexibility** | Can add custom routing logic, priority, load balancing | SDK handles spawn/cleanup but less customizable |
+| **Bounded delegation** | Must build manually (recursion limits, read-only mode) | SDK scopes each subagent's `tools` list automatically |
+| **Context isolation** | Each agent gets fresh context (intentional design) | SDK subagents inherit parent context by default |
+| **Maintenance** | More code to maintain | SDK handles lifecycle, error recovery |
+
+**Recommendation**: Keep the custom system as a learning vehicle, but create
+a parallel branch that implements the SDK-native approach. Comparing the two
+will teach you more about harness engineering than either one alone. The custom
+system teaches *how* orchestration works; the SDK version teaches *what the
+SDK handles for you* and where the remaining gaps are.
+
+---
+
+## Improvement Roadmap: Learning Path
+
+Given the goal of learning harness engineering through this project, here is a
+recommended order that builds understanding incrementally. Each step introduces
+one concept, uses a mix of SDK features and custom code, and produces a
+measurable before/after difference.
+
+### Phase 1: Foundations (SDK Adoption)
+
+These changes are mostly configuration -- switch from defaults to explicit SDK
+features. Low effort, high learning density.
+
+**Step 1: Enable SDK guardrails** (Raschka: Context Bloat + Resilience)
+- Add `max_turns=20` and `max_budget_usd=0.50` to all `ClaudeAgentOptions`
+- Add `thinking={"type": "adaptive"}` to UI agent
+- Switch to `async with ClaudeSDKClient(options) as client:` pattern
+- **Learn**: How the SDK constrains agent behavior without custom code
+- **Measure**: Check that long conversations stop gracefully instead of running away
+
+**Step 2: Add observability via SDK usage data** (Raschka: operational)
+- Capture `AssistantMessage.usage` in every agent's `process()` method
+- Extend `AgentMessage` with `input_tokens`, `output_tokens`, `duration_ms`
+- Add timing with `time.monotonic()` around calls
+- **Learn**: How much each agent costs per request, where time is spent
+- **Measure**: `/debug/messages` now shows token counts and timing
+
+**Step 3: Add hooks for tool logging** (Raschka: Tool Access + Prompt Shape)
+- Register `PostToolUse` hooks to log every tool invocation
+- Register `PreToolUse` hook for the `delete_book` tool to add confirmation
+- **Learn**: How SDK hooks intercept the agent loop without modifying agent code
+- **Measure**: Tool call audit trail in debug output
+
+### Phase 2: Context Engineering (Custom + SDK)
+
+These require understanding how context flows through the system. Mix of
+SDK features and custom code.
+
+**Step 4: Inject live data context** (Raschka: Live Repo Context)
+- Call `get_stats()` in `_build_system_prompt()` and append reading list summary
+- **Learn**: How workspace context improves agent responses (test with evals)
+- **Measure**: Run recommendation evals before/after; compare quality
+
+**Step 5: Enable server-side compaction** (Raschka: Context Bloat)
+- Add `betas=["compact-2026-01-12"]` to `ClaudeAgentOptions`
+- Ensure `response.content` (not just text) is preserved across turns
+- **Learn**: How compaction works, what gets summarized, what's lost
+- **Measure**: Run a 50-turn session; verify it doesn't degrade
+
+**Step 6: Separate stable vs. dynamic prompt parts** (Raschka: Prompt Caching)
+- Split `_build_system_prompt()` into `_build_stable_prefix()` and
+  `_build_dynamic_context()`
+- Stable: skill file + tool descriptions + agent awareness
+- Dynamic: data snapshot + session summary
+- **Learn**: How prompt structure affects caching (verify with `cache_read_input_tokens`)
+- **Measure**: Token cost reduction on repeated calls
+
+### Phase 3: Advanced Harness Patterns (Custom Build)
+
+These require building custom infrastructure to understand the concepts deeply.
+
+**Step 7: Build structured session memory** (Raschka: Session Memory)
+- Add `user_preferences` table to database
+- Add `save_preference` / `get_preferences` tools
+- Capture `session_id` from SDK `SystemMessage` for session resumption
+- **Learn**: The difference between conversation context and durable state
+- **Measure**: Recommendation quality across session resets
+
+**Step 8: SDK subagents vs. custom routing** (Raschka: Delegation)
+- Create a branch using `AgentDefinition` + `Agent` tool instead of custom router
+- Compare: observability, error handling, context isolation, ease of adding agents
+- **Learn**: What the SDK abstracts, what you lose, what you gain
+- **Measure**: Side-by-side eval results, code complexity comparison
+
+**Step 9: Self-correction and output validation** (Raschka: Tool Access)
+- Add HTML validation in `_validate_output()`
+- Add tool-call verification (did `create_book` actually get called?)
+- Add one-retry correction loop for empty/invalid responses
+- **Learn**: How runtime guardrails differ from eval-time checks
+- **Measure**: Eval pass rates before/after
+
+---
 
 ### The Gap
 
@@ -555,55 +748,23 @@ return _error("Database timeout", kind="transient", retryable=True)
 
 ---
 
-## Summary: Priority Order
+## Summary: Learning Path at a Glance
 
-| # | Improvement | Raschka Component | Effort | Impact | Why This Order |
-|---|---|---|---|---|---|
-| 1 | **Resilience** (timeouts + retries) | -- (operational) | Low | High | Users currently get hung requests or raw 500s |
-| 2 | **Output validation** | 3 (Tool Access) | Low | Medium | Prevents broken UI from reaching the browser |
-| 3 | **Observability** (timing + traces) | -- (operational) | Medium | High | Can't improve what you can't measure |
-| 4 | **Error taxonomy** | 3 (Tool Access) | Low | Medium | Enables smarter retry and error UX |
-| 5 | **Context management** | 4 (Context Bloat) | Medium | Medium | Prevents degradation in long sessions |
-| 6 | **Self-correction loops** | 3 (Tool Access) | Medium | Medium | Improves complex query handling |
-| 7 | **Dynamic registry** | 6 (Delegation) | Low | Low | Completes the hexagonal decoupling |
-| 8 | **Cross-session memory** | 5 (Session Memory) | High | High | Transforms recommendation quality |
+| Phase | Step | Raschka Component | SDK vs Custom | Effort |
+|---|---|---|---|---|
+| **1: Foundations** | 1. SDK guardrails (`max_turns`, `max_budget_usd`, `thinking`) | 4 + Resilience | SDK config | Low |
+| | 2. Observability (`usage` data, timing) | Operational | SDK + custom | Low |
+| | 3. Hooks (tool logging, delete confirmation) | 3 (Tools) | SDK hooks | Low |
+| **2: Context** | 4. Live data context (stats in system prompt) | 1 (Live Context) | Custom | Medium |
+| | 5. Server-side compaction | 4 (Context Bloat) | SDK beta | Medium |
+| | 6. Prompt cache optimization (stable/dynamic split) | 2 (Prompt Shape) | Custom + SDK | Medium |
+| **3: Advanced** | 7. Structured session memory + preferences | 5 (Session Memory) | Custom + SDK | High |
+| | 8. SDK subagents vs custom routing (comparison branch) | 6 (Delegation) | SDK native | High |
+| | 9. Output validation + self-correction | 3 (Tools) | Custom | Medium |
 
-### Unmapped Raschka Components (New Work Needed)
-
-The eight improvements above don't fully cover two of Raschka's components.
-These need dedicated work:
-
-**Component 1: Live Repo Context (adapted as "Live Data Context")**
-
-This project's "repo" is the SQLite database. Before the LLM reasons about
-anything, the harness should inject a compact data snapshot:
-
-```
-You are managing a reading list with 12 books:
-- 3 want-to-read, 4 reading, 5 finished
-- Average rating: 4.2 (8 rated)
-- Most recent addition: "Dune" (2 days ago)
-```
-
-**Where**: `app/agents/ui_agent.py` in `_build_system_prompt()`. Call
-`get_stats` at prompt-build time and append a `## Current Reading List State`
-section to the system prompt. This is cheap (one DB query) and gives the LLM
-grounding before it even sees the user's message.
-
-**Component 2: Prompt Shape and Cache Reuse**
-
-Currently `_ensure_connected()` rebuilds the system prompt and creates a new
-MCP server on every reconnection. The prompt has a natural stable/changing
-split:
-
-- **Stable**: skill file content, tool descriptions, agent awareness
-- **Changing**: data snapshot (Component 1), working memory (Component 5)
-
-**Where**: `app/agents/base_agent.py`. Separate `_build_stable_prefix()` from
-`_build_dynamic_context()`. At the SDK level, if `ClaudeSDKClient` supports
-prompt caching (prefix stability), ensure the stable prefix is provided as a
-cacheable block. Even without SDK support, this separation clarifies which
-parts of the prompt are worth optimizing.
+**Start with Step 1.** It's three lines of config that immediately add
+resilience and reasoning quality. Each subsequent step builds on what you
+learned before.
 
 ---
 
