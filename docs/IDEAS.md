@@ -113,6 +113,41 @@ Details: [git-as-user-state-store.md](git-as-user-state-store.md) > "Option D: B
 
 ---
 
+## Event-Sourced Context Engineering
+
+The biggest idea to emerge from this exploration: **the LLM context window
+is a materialized view**, and event sourcing gives you principled primitives
+for building it.
+
+| Event Sourcing Primitive | Context Engineering Use |
+|---|---|
+| **Event log** | Full transcript (user msgs, tool calls, responses) |
+| **Materialized view** | The context window assembled each turn |
+| **Projection function** | Logic that builds the prompt from events |
+| **Rollup / compaction** | Summarize old turns: "User viewed books, rated Dune 5/5" |
+| **Consumer groups** | Each agent gets its own projection with different rollup strategies |
+| **Snapshots** | Cache boundaries -- everything before is pre-computed |
+| **Retention policy** | Rules for what stays (state changes) vs. what goes (stale tool output) |
+
+**The key insight**: current context management (truncation, turn counting,
+server-side compaction) is positional -- it compresses based on age or size.
+Event-sourced rollups are **semantic** -- they compress based on event type
+and importance. A state-changing tool call ("rated Dune 5/5") survives
+longer than a read-only tool result (14-book JSON blob).
+
+**Tiered rollups** model how memory works:
+- Tier 0-1: last 5 turns at full fidelity (vivid recent recall)
+- Tier 2: turns 6-15 summarized per-turn (compressed recent memory)
+- Tier 3: turns 16+ rolled into session summary (abstract patterns)
+- Tier 4: previous sessions as preferences only (long-term memory)
+
+**If brooklet can express these primitives natively**, it becomes not just
+"SQLite of event streaming" but "SQLite of context engineering."
+
+Details: [event-sourced-context-engineering.md](event-sourced-context-engineering.md)
+
+---
+
 ## Learning Path
 
 Ordered by learning value -- each step builds on the previous.
