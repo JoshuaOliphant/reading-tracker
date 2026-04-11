@@ -25,6 +25,7 @@ venv/
 data/*.db
 data/*.json
 data/eval_transcripts/
+data/history/
 
 # Logs
 logs/
