@@ -13,10 +13,43 @@ lesson stands alone as a shareable article.
 Gherkin scenarios describing desired harness behavior, then implements and
 verifies with the existing eval infrastructure.
 
-**Theoretical framework**: Sebastian Raschka's "Components of a Coding Agent"
-(6 components) adapted to the reading-tracker domain via the docs in this
-repo (`docs/harness-improvements.md`, `docs/harness-engineering.md`,
-`docs/event-sourced-context-engineering.md`).
+**Theoretical framework**: Two complementary sources anchor this curriculum.
+
+1. **Sebastian Raschka's "Components of a Coding Agent"** (April 2025) —
+   six components: Live Repo Context, Prompt Shape & Cache, Tool Access &
+   Use, Context Bloat, Session Memory, Delegation. Adapted to the
+   reading-tracker domain via the docs in this repo
+   (`docs/harness-improvements.md`, `docs/harness-engineering.md`,
+   `docs/event-sourced-context-engineering.md`).
+
+2. **Anthropic's "Scaling Managed Agents: Decoupling the Brain from the
+   Hands"** (Lance Martin, Gabe Cemaj, Michael Cohen, April 2026) — the
+   three-component decomposition: **Session** (append-only event log),
+   **Harness** (the loop calling Claude), **Sandbox** (execution
+   environment). Each can be swapped independently. Key principles we'll
+   apply: externalized session state for resilience, standardized tool
+   interfaces, cattle-not-pets components, and separation of *recoverable
+   storage* from *context management strategy*.
+
+### Assumption Staleness: A Core Principle
+
+Anthropic's post surfaces a principle worth making explicit: **harness
+workarounds encode assumptions about model limitations, and those
+assumptions expire as models improve.** Claude Sonnet 4.5's "context
+anxiety" (premature task wrap-up) required context resets — a workaround
+that became dead weight when Claude Opus 4.5 no longer exhibited that
+behavior.
+
+The implication for this curriculum: prefer SDK-native solutions and
+mechanical guardrails over custom workarounds that compensate for specific
+model quirks. Design the harness to be minimal and inspectable, so you can
+tell when an assumption has expired and remove the dead weight.
+
+This principle shows up most directly in:
+- **Lesson 2** (SDK guardrails over custom retry/budget code)
+- **Lesson 8** (SDK compaction over custom turn-counting)
+- **Lesson 11** (comparing custom routing to SDK subagents — and accepting
+  that the SDK version may age better)
 
 ---
 
@@ -80,6 +113,14 @@ unbounded agent loop is a cost and latency risk. Three SDK features provide
 mechanical bounds without custom code: `max_turns` (prevent infinite loops),
 `max_budget_usd` (prevent cost overruns), `async with` (prevent resource
 leaks).
+
+This lesson introduces the **assumption staleness** principle from
+Anthropic's "Scaling Managed Agents" post. Custom retry loops, manual turn
+counting, and hand-rolled budget tracking are all workarounds that
+compensate for SDK limitations — or for model behaviors that may no longer
+exist. SDK-native bounds age better because they're maintained alongside
+the model. When we get a choice between "write custom code" and "configure
+an SDK flag," we'll choose the flag and note why.
 
 **Existing code to walk through**:
 - `ClaudeAgentOptions` usage in all three agents
@@ -596,6 +637,17 @@ the trace. The SDK's `AgentDefinition` + `Agent` tool does the same thing
 with less code. Building it yourself teaches how orchestration works.
 Comparing to the SDK teaches what abstraction buys you.
 
+This lesson also introduces Anthropic's **"decouple the brain from the
+hands"** framing. In Managed Agents, each execution environment is a
+"hand" exposed through a standardized interface (`execute(name, input) →
+string`). This lets Claude reason about multiple execution targets and
+lets failed components be replaced without affecting the rest of the
+system. Our `message_agent` tool is a primitive version of the same
+pattern — each agent is a "hand" with a semantic message interface.
+Comparing our custom version to the SDK's `Agent` tool is really comparing
+two implementations of the same architectural principle: standardized
+tool interfaces enable composable delegation.
+
 **Existing code to walk through (deep dive)**:
 - `router.py` — `AgentRouter.__init__()`, `initialize()`, agent registry,
   `process_user_message()`, `route_agent_message()`, `MessageLog`
@@ -667,6 +719,29 @@ agent its own projection, snapshots provide cache boundaries.
 This reframes Raschka's Components 4 (Context Bloat) and 5 (Session Memory)
 as projections of a single underlying event stream.
 
+**Architectural validation from Anthropic**: This lesson's framing aligns
+directly with the Managed Agents architecture. Anthropic describes the
+session as a "context object living outside Claude's context window," with
+a `getEvents()` interface that supports "picking up from last read
+position, rewinding before specific moments, rereading prior to specific
+actions, and selecting positional slices of the event stream." They
+explicitly separate *recoverable storage* (the session log) from *context
+management strategy* (the harness transformation layer that builds the
+context window from events).
+
+This is exactly what a brooklet-backed event store + `ContextProjector`
+gives us. Anthropic's architecture is the production-scale version of what
+we're building at educational scale. Quote from the blog:
+
+> "Fetched events can be transformed in the harness before passing to the
+> context window. This decouples recoverable storage from context
+> management strategy."
+
+That decoupling is the key insight. The event log is the source of truth.
+The context window is a view built by a projection function. The
+projection function is where all the interesting harness engineering lives
+— rollups, clipping, tiered fidelity, token budgets, per-agent views.
+
 **Existing code to walk through**:
 - `git_audit.py` — the existing event-like pattern (mirrors mutations to
   git commits)
@@ -733,20 +808,20 @@ unified through event sourcing.
 
 ## Curriculum Summary
 
-| # | Lesson | Raschka Component | Phase | Key Artifact |
-|---|--------|-------------------|-------|-------------|
-| 1 | The Bare Agent Loop | All 6 (audit) | Understanding | Baseline BDD specs + evals |
-| 2 | Bounding the Loop | 4 (Context Bloat) | Understanding | SDK guardrails config |
-| 3 | Seeing the Loop | Cross-cutting | Understanding | Observability infrastructure |
-| 4 | Live Context | 1 (Live Repo Context) | Feeding | `_build_data_context()` |
-| 5 | Convention Tests | 3 (Tool Access) | Feeding | `test_conventions.py` |
-| 6 | Hooks | 3 (Tool Access) | Feeding | `.claude/settings.json` + hook scripts |
-| 7 | Prompt Architecture | 2 (Prompt Shape) | Optimizing | Stable/dynamic prompt split |
-| 8 | Context Management | 4 (Context Bloat) | Optimizing | Compaction + clipping |
-| 9 | Output Validation | 3 (Tool Access) | Optimizing | `_validate_output()` + correction loop |
-| 10 | Session Memory | 5 (Session Memory) | Persistence | `user_preferences` table + tools |
-| 11 | Bounded Delegation | 6 (Delegation) | Persistence | SDK subagent comparison branch |
-| 12 | Events & Context | 4 + 5 (unified) | Frontier | brooklet events + `ContextProjector` |
+| # | Lesson | Raschka Component | Anthropic Principle | Phase | Key Artifact |
+|---|--------|-------------------|---------------------|-------|-------------|
+| 1 | The Bare Agent Loop | All 6 (audit) | Harness vs. Sandbox boundary | Understanding | Baseline BDD specs + evals |
+| 2 | Bounding the Loop | 4 (Context Bloat) | Assumption staleness | Understanding | SDK guardrails config |
+| 3 | Seeing the Loop | Cross-cutting | Externalized observability | Understanding | Observability infrastructure |
+| 4 | Live Context | 1 (Live Repo Context) | — | Feeding | `_build_data_context()` |
+| 5 | Convention Tests | 3 (Tool Access) | — | Feeding | `test_conventions.py` |
+| 6 | Hooks | 3 (Tool Access) | Security boundary separation | Feeding | `.claude/settings.json` + hook scripts |
+| 7 | Prompt Architecture | 2 (Prompt Shape) | Transformation layer | Optimizing | Stable/dynamic prompt split |
+| 8 | Context Management | 4 (Context Bloat) | Recoverable storage ≠ context management | Optimizing | Compaction + clipping |
+| 9 | Output Validation | 3 (Tool Access) | Cattle-not-pets on outputs | Optimizing | `_validate_output()` + correction loop |
+| 10 | Session Memory | 5 (Session Memory) | Externalized session state | Persistence | `user_preferences` table + tools |
+| 11 | Bounded Delegation | 6 (Delegation) | Decouple brain from hands | Persistence | SDK subagent comparison branch |
+| 12 | Events & Context | 4 + 5 (unified) | Session as context object | Frontier | brooklet events + `ContextProjector` |
 
 ## What's NOT In Scope
 
@@ -766,6 +841,10 @@ curriculum to keep it focused:
   harness curriculum
 - **MCP server configuration** (`.mcp.json`) — useful but not core to the
   learning progression
+- **Managed Agents service integration** — Anthropic's hosted service is
+  referenced as architectural validation for Lesson 12, but we're building
+  the concepts ourselves at educational scale, not deploying to the
+  production service
 
 ## Git Strategy
 
