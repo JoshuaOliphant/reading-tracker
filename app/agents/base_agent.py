@@ -12,12 +12,17 @@ Each agent:
 """
 
 from abc import ABC, abstractmethod
-from claude_agent_sdk import tool, create_sdk_mcp_server
+from claude_agent_sdk import tool, create_sdk_mcp_server, AssistantMessage, ResultMessage, TextBlock
 from typing import Any, TYPE_CHECKING
 import json
+import logging
+
+from app import otel
 
 if TYPE_CHECKING:
     from .router import AgentRouter
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAgent(ABC):
@@ -90,6 +95,29 @@ Do NOT message yourself ({agent_name}).
             }
 
         return message_agent
+
+    async def _collect_response(self, client) -> str:
+        """Consume the response stream, emit token telemetry, return concatenated text."""
+        text_parts: list[str] = []
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                usage = msg.usage or {}
+                total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                otel.record_agent_tokens(
+                    agent=self.agent_name,
+                    total_tokens=total,
+                    duration_ms=msg.duration_ms,
+                )
+                logger.debug(
+                    "agent=%s tokens=%d duration_ms=%d cost=$%.4f",
+                    self.agent_name, total, msg.duration_ms,
+                    msg.total_cost_usd or 0.0,
+                )
+        return "\n".join(text_parts)
 
     def _get_agent_awareness_prompt(self) -> str:
         """

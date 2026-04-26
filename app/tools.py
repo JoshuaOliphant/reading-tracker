@@ -14,9 +14,25 @@ Each tool:
 from claude_agent_sdk import tool, create_sdk_mcp_server
 from typing import Any
 import json
+import time
+import functools
 
 from app import database as db
 from app import events
+from app import otel
+
+
+def _timed(tool_name: str):
+    """Decorator that records wall-clock latency for a tool call via OTel."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(args: dict[str, Any]) -> dict[str, Any]:
+            t0 = time.monotonic()
+            result = await fn(args)
+            otel.record_tool_latency(tool_name, (time.monotonic() - t0) * 1000)
+            return result
+        return wrapper
+    return decorator
 
 
 def _success(data: Any) -> dict:
@@ -47,6 +63,7 @@ def _error(message: str) -> dict:
     "Get all books in the reading list. Returns array with id, title, author, status (want-to-read, reading, finished), rating (1-5), notes.",
     {}
 )
+@_timed("list_books")
 async def list_books(args: dict[str, Any]) -> dict[str, Any]:
     """List all books."""
     books = await db.get_all_books()
@@ -58,6 +75,7 @@ async def list_books(args: dict[str, Any]) -> dict[str, Any]:
     "Get a specific book by ID. Returns full book details.",
     {"id": str}
 )
+@_timed("get_book")
 async def get_book(args: dict[str, Any]) -> dict[str, Any]:
     """Get a single book."""
     try:
@@ -76,6 +94,7 @@ async def get_book(args: dict[str, Any]) -> dict[str, Any]:
     "Add a new book to the reading list. Requires: title. Optional: author, status (want-to-read, reading, finished - defaults to want-to-read), rating (1-5), notes.",
     {"title": str, "author": str | None, "status": str | None, "rating": int | None, "notes": str | None}
 )
+@_timed("create_book")
 async def create_book(args: dict[str, Any]) -> dict[str, Any]:
     """Create a new book."""
     title = args.get("title", "").strip()
@@ -99,6 +118,7 @@ async def create_book(args: dict[str, Any]) -> dict[str, Any]:
     "Update an existing book. Requires: id. Optional: title, author, status (want-to-read, reading, finished), rating (1-5), notes.",
     {"id": str, "title": str | None, "author": str | None, "status": str | None, "rating": int | None, "notes": str | None}
 )
+@_timed("update_book")
 async def update_book(args: dict[str, Any]) -> dict[str, Any]:
     """Update a book."""
     try:
@@ -131,6 +151,7 @@ async def update_book(args: dict[str, Any]) -> dict[str, Any]:
     "Remove a book from the reading list by ID. This is permanent.",
     {"id": str}
 )
+@_timed("delete_book")
 async def delete_book(args: dict[str, Any]) -> dict[str, Any]:
     """Delete a book."""
     try:
@@ -151,6 +172,7 @@ async def delete_book(args: dict[str, Any]) -> dict[str, Any]:
     "Search books by keyword in title or author.",
     {"query": str}
 )
+@_timed("search_books")
 async def search_books(args: dict[str, Any]) -> dict[str, Any]:
     """Search books by title or author."""
     query = args.get("query", "").strip()
@@ -166,6 +188,7 @@ async def search_books(args: dict[str, Any]) -> dict[str, Any]:
     "Get reading statistics. Returns total books, count by status, average rating of rated books.",
     {}
 )
+@_timed("get_stats")
 async def get_stats(args: dict[str, Any]) -> dict[str, Any]:
     """Get reading statistics."""
     stats = await db.get_stats()
@@ -184,6 +207,7 @@ async def get_stats(args: dict[str, Any]) -> dict[str, Any]:
     ),
     {"limit": int | None, "book_id": int | None, "type": str | None}
 )
+@_timed("get_recent_activity")
 async def get_recent_activity(args: dict[str, Any]) -> dict[str, Any]:
     """Get recent book activity events, with optional filtering."""
     limit = args.get("limit") or 20
@@ -218,6 +242,7 @@ async def get_recent_activity(args: dict[str, Any]) -> dict[str, Any]:
     ),
     {"limit": int | None}
 )
+@_timed("get_agent_messages")
 async def get_agent_messages(args: dict[str, Any]) -> dict[str, Any]:
     """Get recent inter-agent messages."""
     limit = args.get("limit") or 20

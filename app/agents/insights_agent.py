@@ -19,8 +19,6 @@ from typing import TYPE_CHECKING
 from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
-    AssistantMessage,
-    TextBlock,
 )
 from .base_agent import BaseAgent
 from ..tools import list_books, get_stats, get_recent_activity
@@ -151,15 +149,7 @@ Example response:
         """Process message and return text analysis."""
         await self._ensure_connected()
         await self.client.query(message)
-
-        text_parts: list[str] = []
-        async for msg in self.client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        text_parts.append(block.text)
-
-        return "\n".join(text_parts).strip()
+        return (await self._collect_response(self.client)).strip()
 
     async def reset(self):
         """Reset conversation state."""

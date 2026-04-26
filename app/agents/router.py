@@ -22,7 +22,7 @@ from typing import Any
 import json
 import asyncio
 
-from app import events
+from app import events, otel
 
 
 @dataclass
@@ -148,7 +148,9 @@ class AgentRouter:
         )
 
         try:
-            response = await self._agents["ui"].process(message)
+            with otel.span("router.user_message", from_agent="user", to_agent="ui"):
+                response = await self._agents["ui"].process(message)
+            otel.record_router_message("user", "ui")
             # Truncate response for logging (HTML can be large)
             msg.response = response[:500] + "..." if len(response) > 500 else response
         except Exception as e:
@@ -186,7 +188,9 @@ class AgentRouter:
 
         # Route to target agent
         try:
-            response = await self._agents[to_agent].process(message)
+            with otel.span("router.agent_message", from_agent=from_agent, to_agent=to_agent):
+                response = await self._agents[to_agent].process(message)
+            otel.record_router_message(from_agent, to_agent)
             msg.response = response
         except Exception as e:
             msg.response = f"Error: {str(e)}"

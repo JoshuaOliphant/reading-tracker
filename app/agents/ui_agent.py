@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING
 from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
-    AssistantMessage,
-    TextBlock,
 )
 from .base_agent import BaseAgent
 from ..tools import create_tools_server
@@ -125,15 +123,7 @@ class UIAgent(BaseAgent):
         """Process user message and return HTML."""
         await self._ensure_connected()
         await self.client.query(message)
-
-        html_parts: list[str] = []
-        async for msg in self.client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        html_parts.append(block.text)
-
-        html = "\n".join(html_parts)
+        html = await self._collect_response(self.client)
         return self._clean_html(html)
 
     def _clean_html(self, html: str) -> str:

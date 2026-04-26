@@ -27,6 +27,12 @@ data/*.json
 data/eval_transcripts/
 data/history/
 
+# Observability harness (runtime-generated)
+.claude/harness/observability/bin/
+.claude/harness/observability/pids/
+.claude/harness/observability/logs/
+.claude/harness/observability/data/
+
 # Logs
 logs/
 

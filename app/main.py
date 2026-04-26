@@ -30,6 +30,7 @@ from app.saved_views import (
     ViewType,
 )
 from app import database as db
+from app import otel
 
 router = AgentRouter()
 views_manager = get_views_manager()
@@ -38,6 +39,7 @@ views_manager = get_views_manager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - init database and cleanup on shutdown."""
+    otel.configure()
     # Initialize database and migrate from JSON if needed
     await db.init_db()
     await db.migrate_from_json()

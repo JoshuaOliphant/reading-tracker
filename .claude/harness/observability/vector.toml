@@ -1,0 +1,37 @@
+# ABOUTME: Vector pipeline — lightweight mode: OTLP source → JSONL file sinks only.
+# ABOUTME: No transforms yet. Session 1: understand raw OTLP shape before reshaping it.
+
+[api]
+enabled = true
+address = "127.0.0.1:8686"
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+
+[sources.otlp]
+type = "opentelemetry"
+
+[sources.otlp.grpc]
+address = "127.0.0.1:4317"
+
+[sources.otlp.http]
+address = "127.0.0.1:4318"
+
+# ── Sinks ────────────────────────────────────────────────────────────────────
+
+[sinks.logs_jsonl]
+type = "file"
+inputs = ["otlp.logs"]
+path = ".claude/harness/observability/data/jsonl/logs/%Y-%m-%d.jsonl"
+encoding.codec = "json"
+
+[sinks.traces_jsonl]
+type = "file"
+inputs = ["otlp.traces"]
+path = ".claude/harness/observability/data/jsonl/traces/%Y-%m-%d.jsonl"
+encoding.codec = "json"
+
+[sinks.metrics_jsonl]
+type = "file"
+inputs = ["otlp.metrics"]
+path = ".claude/harness/observability/data/jsonl/metrics/%Y-%m-%d.jsonl"
+encoding.codec = "json"
