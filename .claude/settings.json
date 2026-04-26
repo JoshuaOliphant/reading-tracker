@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__ui_tools__list_books",
+      "mcp__ui_tools__get_book",
+      "mcp__ui_tools__search_books",
+      "mcp__ui_tools__get_stats",
+      "mcp__ui_tools__get_recent_activity",
+      "mcp__ui_tools__get_agent_messages",
+      "mcp__recommender_tools__list_books",
+      "mcp__recommender_tools__get_stats",
+      "mcp__recommender_tools__get_recent_activity",
+      "mcp__insights_tools__list_books",
+      "mcp__insights_tools__get_stats",
+      "mcp__insights_tools__get_recent_activity",
+      "mcp__vault-recommender__recommend_by_topic",
+      "mcp__vault-recommender__find_missing_connections",
+      "mcp__obsidian-vault__get_backlinks",
+      "mcp__granola__list_meetings",
+      "mcp__granola__get_meetings",
+      "mcp__claude-in-chrome__read_network_requests",
+      "mcp__claude-in-chrome__read_console_messages",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__computer",
+      "mcp__claude-in-chrome__navigate",
+      "mcp__claude-in-chrome__javascript_tool",
+      "Bash(hey recordings:*)"
+    ]
+  }
+}

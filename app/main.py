@@ -95,6 +95,14 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
                     </svg>
                     Saved Views
                 </button>
+                <button hx-get="/activity" hx-target="#content"
+                        class="text-sm text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                    Activity
+                </button>
                 <a href="/debug/messages" target="_blank"
                    class="text-xs text-slate-500 hover:text-slate-400 transition-colors">
                     Debug
@@ -466,6 +474,31 @@ async def debug_agents():
         "agents": router.get_agent_names(),
         "descriptions": router.get_agent_descriptions()
     }
+
+
+@app.get("/debug/events", response_class=JSONResponse)
+async def debug_events(topic: str = "books", limit: int = 50):
+    """
+    Debug endpoint to view any brooklet topic.
+
+    Default topic is "books"; pass ?topic=agent.messages to see inter-agent
+    traffic, or ?topic=<name> for any other registered topic. Uses a throwaway
+    consumer group so polling is safe.
+    """
+    from app import events as app_events
+    stream = app_events.get_stream()
+    return {
+        "topic": topic,
+        "all_topics": list(stream.topics()),
+        "events": app_events.read_recent(topic, limit=limit),
+    }
+
+
+@app.get("/activity", response_class=HTMLResponse)
+async def activity_feed():
+    """User-facing activity feed. Returns an HTMX-swappable fragment."""
+    from app import activity
+    return activity.render_activity_feed()
 
 
 @app.post("/views/save", response_class=HTMLResponse)

@@ -23,7 +23,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 from .base_agent import BaseAgent
-from ..tools import list_books, get_stats
+from ..tools import list_books, get_stats, get_recent_activity
 
 if TYPE_CHECKING:
     from .router import AgentRouter
@@ -111,6 +111,7 @@ Example response:
             tools=[
                 list_books,
                 get_stats,
+                get_recent_activity,
                 message_tool,
             ]
         )
@@ -128,6 +129,7 @@ Example response:
             allowed_tools=[
                 "mcp__recommender_tools__list_books",
                 "mcp__recommender_tools__get_stats",
+                "mcp__recommender_tools__get_recent_activity",
                 "mcp__recommender_tools__message_agent",
             ],
             permission_mode="acceptEdits",

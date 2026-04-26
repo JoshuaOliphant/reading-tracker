@@ -22,6 +22,8 @@ from typing import Any
 import json
 import asyncio
 
+from app import events
+
 
 @dataclass
 class AgentMessage:
@@ -152,9 +154,11 @@ class AgentRouter:
         except Exception as e:
             msg.response = f"Error: {str(e)}"
             self.message_log.add(msg)
+            events.emit_agent_message("user", "ui", message, response=msg.response)
             raise
 
         self.message_log.add(msg)
+        events.emit_agent_message("user", "ui", message, response=msg.response)
         return response
 
     async def route_agent_message(self, from_agent: str, to_agent: str, message: str) -> str:
@@ -189,6 +193,7 @@ class AgentRouter:
             response = msg.response
 
         self.message_log.add(msg)
+        events.emit_agent_message(from_agent, to_agent, message, response=msg.response)
         return response
 
     def get_message_log(self) -> MessageLog:
