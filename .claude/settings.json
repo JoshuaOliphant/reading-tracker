@@ -18,6 +18,9 @@
       "mcp__obsidian-vault__get_backlinks",
       "mcp__granola__list_meetings",
       "mcp__granola__get_meetings",
+      "mcp__claude-in-chrome__read_network_requests",
+      "mcp__claude-in-chrome__read_console_messages",
+      "mcp__claude-in-chrome__tabs_context_mcp",
       "Bash(hey recordings:*)"
     ]
   }
