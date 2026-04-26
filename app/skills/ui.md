@@ -553,3 +553,78 @@ Action: Call create_book with title="1984", author="George Orwell", status="want
 Example: Form with id="3", title="Updated Title", status="finished"
 Message: "update book with form data"
 Action: Call update_book with id="3", title="Updated Title", status="finished"
+
+## Activity Stream — Showing What Happened
+
+Every book mutation (create/update/delete) is recorded as an event in an
+append-only stream. You can read it with `get_recent_activity` to answer
+questions about history, timing, and changes — without re-querying the DB.
+
+Each event has:
+- `type` — "created" | "updated" | "deleted"
+- `id` — book id
+- `before` — full book state before the change (null on create)
+- `after` — full book state after the change (null on delete)
+- `_ts` — ISO timestamp (e.g. "2026-04-24T21:53:38.615435+00:00")
+- `_seq` — monotonic sequence number across all events
+
+### When to use `get_recent_activity`
+
+- "show my activity" / "what's been happening" → `get_recent_activity()`
+- "what happened with Dune" / "history of book #3" → first `search_books`
+  or `list_books` to find the id, then `get_recent_activity(book_id=3)`
+- "what books did I finish recently" → `get_recent_activity(type="updated")`
+  then filter for events where `before.status != "finished"` and
+  `after.status == "finished"`
+- "when did I add this book" → `get_recent_activity(book_id=N, type="created")`
+- "show me what changed" → diff `before` vs `after` in the rendering
+
+### Rendering Activity
+
+Render an activity feed as a card with newest events at the top. For each
+event, write a short human-readable line that describes what happened, then
+a small muted timestamp on the right.
+
+Phrasing guidance — pick the most informative beat:
+
+- `created` → "Added '<title>' by <author>" (omit "by author" if no author)
+- `updated` with `status` change:
+  - want-to-read → reading: "Started reading '<title>'"
+  - reading → finished: "Finished '<title>'"
+  - finished → reading: "Picked '<title>' back up"
+  - any → want-to-read: "Moved '<title>' back to want-to-read"
+- `updated` with `rating` change only: "Rated '<title>' <rating>/5"
+- `updated` status AND rating in same event: combine — "Finished '<title>' and rated it 5/5"
+- `updated` notes only: "Updated notes on '<title>'"
+- `updated` other fields only: "Updated '<title>'"
+- `deleted` → "Removed '<title>' from your list"
+
+For an auto-refreshing feed, wrap the outer card with:
+```
+hx-get="/agent" hx-trigger="every 10s" hx-vals='{"message":"refresh activity"}' hx-swap="outerHTML"
+```
+
+### Filtering Activity
+
+When the user asks to filter (e.g. "filter by Dune", "only show
+finished books", "just show what I deleted"), call
+`get_recent_activity` with the appropriate `book_id` or `type` filter
+and re-render the same card. Show the active filter as a removable
+"chip" near the heading so the user can clear it:
+
+```html
+<span class="inline-flex items-center gap-1 px-2 py-1 bg-indigo-500/20 text-indigo-300 rounded text-xs">
+  Filter: Dune
+  <button hx-post="/agent" hx-target="#content"
+          hx-vals='{"message":"show all activity"}'
+          class="hover:text-white">×</button>
+</span>
+```
+
+## Inter-Agent Messages — Showing What the Agents Discussed
+
+`get_agent_messages` reads the inter-agent message stream. Useful when the
+user asks "what did the agents talk about" or "show me the agent
+conversation". Each entry has `from`, `to`, `message`, `response`, plus the
+`_ts` and `_seq` envelope fields. Render as a chat-style list of cards
+showing sender → recipient and the exchange.

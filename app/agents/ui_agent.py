@@ -69,7 +69,8 @@ class UIAgent(BaseAgent):
         from claude_agent_sdk import create_sdk_mcp_server
         from ..tools import (
             list_books, get_book, create_book, update_book,
-            delete_book, search_books, get_stats
+            delete_book, search_books, get_stats,
+            get_recent_activity, get_agent_messages,
         )
 
         message_tool = self._create_message_agent_tool()
@@ -85,6 +86,8 @@ class UIAgent(BaseAgent):
                 delete_book,
                 search_books,
                 get_stats,
+                get_recent_activity,
+                get_agent_messages,
                 message_tool,
             ]
         )
@@ -107,6 +110,8 @@ class UIAgent(BaseAgent):
                 "mcp__ui_tools__delete_book",
                 "mcp__ui_tools__search_books",
                 "mcp__ui_tools__get_stats",
+                "mcp__ui_tools__get_recent_activity",
+                "mcp__ui_tools__get_agent_messages",
                 "mcp__ui_tools__message_agent",
             ],
             permission_mode="acceptEdits",
