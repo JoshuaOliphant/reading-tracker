@@ -30,6 +30,33 @@ convention-fixed. Could be installed verbatim into any project.
 | `@_timed` decorator placement in `app/tools.py` | Manual instrumentation per project. Pattern reusable; call sites are not |
 | `record_router_message` / `record_agent_tokens` call sites | Wired into the app's specific routing/agent loop |
 
+## Skill design: instrumentation scanning phase
+
+The interesting half of the skill is an agent that scans the target codebase and
+proposes instrumentation locations before writing anything. Three distinct point types,
+each with its own detection signals:
+
+**Tool call sites** (where `@_timed` goes):
+- Files named `tools.py`, `*_tools.py`, `*_commands.py`
+- Functions decorated with `@tool`, `@mcp.tool`, `@router.tool`, `@app.tool`, etc.
+- FastAPI route handlers (`@app.get`, `@app.post`) also qualify
+- Signature: `async def name(args: dict)` or `async def name(request: ...)`
+
+**Router/dispatch sites** (where `record_router_message` goes):
+- Classes/functions with names: `route`, `dispatch`, `handle_message`, `process`, `forward`
+- Code that inspects a message and branches to different handlers
+- The narrowest point where "message enters, destination is chosen"
+
+**Agent result sites** (where `record_agent_tokens` goes):
+- Call sites returning `ResultMessage`, `ModelResponse`, or any object with `.usage`
+- `usage.input_tokens` / `usage.output_tokens` as field name signals
+- Anthropic SDK: `client.messages.create(...)` or `await agent.run(...)` resolution points
+
+**Workflow:** scan → structured proposal ("found 7 tools in tools.py, 1 router in
+router.py, 2 LLM call sites in base_agent.py") → wait for confirmation → apply.
+Don't apply blindly; patterns in Brooklet may differ enough that a silent write would
+be wrong.
+
 ## Decisions to validate before freezing as conventions
 
 Chosen for reading-tracker — might be accidents, not principles. Let Brooklet
