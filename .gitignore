@@ -21,11 +21,8 @@ venv/
 .env
 .env.local
 
-# Data (runtime-generated)
-data/*.db
-data/*.json
-data/eval_transcripts/
-data/history/
+# Data (runtime-generated) — entire dir is runtime state (DB, JSON, event-capture JSONL)
+data/
 
 # Observability harness (runtime-generated)
 .claude/harness/observability/bin/
