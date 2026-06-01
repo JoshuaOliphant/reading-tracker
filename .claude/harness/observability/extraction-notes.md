@@ -1,12 +1,19 @@
 # ABOUTME: Notes on which files in this harness are candidates for skill extraction.
 # ABOUTME: Created 2026-04-29 after Session 1. Re-read before adding harness to the next project.
 
-## Trigger to extract
+## Extraction: DONE (2026-06-01)
 
-Wait until **Brooklet** gets this harness installed. That's the third repetition
-(blueprint doc → reading-tracker → Brooklet) and the natural moment to factor out
-a `claude-code-observability-harness` skill. Earlier extraction freezes the wrong
-defaults — let one more concrete use case stress-test the conventions first.
+Skill extracted to `~/.claude/skills/claude-code-observability-harness/`.
+
+Correction to the original plan: this note assumed the order was
+`blueprint → reading-tracker → Brooklet` and said to wait until Brooklet got the
+harness. That was wrong — **Brooklet already had it first and more completely**
+(real order: blueprint → Brooklet (full: VictoriaLogs/VictoriaMetrics + transforms +
+buffers + status.sh + no-op-when-absent otel module) → reading-tracker (lite: JSONL
+file sinks only)). The two implementations together were the stress-test, so the skill
+generalizes from both: it is **mode-parameterized** (`lite` = Vector+JSONL only, the
+reading-tracker variant; `full` = + Victoria backends, the Brooklet variant) and keeps
+the instrumentation-scanning phase that proposes domain instruments per project.
 
 ## Portable across projects (drop-in copy)
 
