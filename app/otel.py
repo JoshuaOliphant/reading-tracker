@@ -9,6 +9,9 @@ Three things we instrument:
   2. Tool call latency      — wall-clock time per tool call (histogram, by tool name)
   3. Router message events  — which agent was selected, turn count (counter + span)
 
+We also bridge stdlib logging into OTel: configure() attaches a LoggingHandler to the
+root logger so log records export over OTLP and carry the active span's trace/span IDs.
+
 Usage: import app.otel as otel; otel.tracer.start_as_current_span(...)
 Module-attribute access avoids the stale-binding bug where `from app.otel import tracer`
 captures a no-op reference before configure() runs.
@@ -22,8 +25,12 @@ from contextlib import contextmanager
 from typing import Generator
 
 from opentelemetry import metrics, trace
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
@@ -89,6 +96,20 @@ def configure() -> None:
         unit="messages",
         description="Inter-agent messages routed, by from/to agent pair",
     )
+
+    # Logs → OTLP HTTP — bridge stdlib logging into OTel so the logs sink fills and
+    # log records carry the active span's trace/span IDs for correlation.
+    logger_provider = LoggerProvider(resource=resource)
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{OTLP_HTTP_ENDPOINT}/v1/logs"))
+    )
+    set_logger_provider(logger_provider)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(LoggingHandler(level=logging.INFO, logger_provider=logger_provider))
+    # Root logger defaults to WARNING, which would gate INFO records before they reach the
+    # handler. Lower the threshold so app INFO logs actually flow through the bridge.
+    if root_logger.level == logging.NOTSET or root_logger.level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
 
     _configured = True
     logger.info("OTel configured — exporting to %s", OTLP_HTTP_ENDPOINT)

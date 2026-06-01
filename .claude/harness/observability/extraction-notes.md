@@ -69,6 +69,23 @@ stress-test these before locking them in as skill defaults.
 - **OTLP ports 4317 / 4318** — OTLP standards, definitely keep
 - **Lightweight mode only** — file sinks, no VictoriaMetrics/VictoriaLogs yet
 
+## Verification (2026-06-01)
+
+Pipeline verified end-to-end before any Brooklet install.
+
+- **Transport:** direct OTLP emit → Vector `:4318` → dated JSONL in `data/jsonl/{traces,metrics}/` within seconds of force-flush.
+- **Real app instrumentation:** one live `POST /agent` ("list books") fired every call site with correct labels:
+  - `tool.latency{tool=list_books}` — `@_timed` in `app/tools.py`
+  - `agent.tokens{agent=ui, duration_ms=...}` — `record_agent_tokens`
+  - `router.messages{from=user, to=ui}` — `record_router_message`
+  - span `router.user_message` — `otel.span()` in router
+- The empty JSONL dirs noted after Session 1 were just an unexercised app, not a wiring bug.
+
+**Gap closed in this session:** logs were the one missing signal. `vector.toml` wires a
+`logs_jsonl` sink, but nothing emitted OTLP log records — Python `logging` was never bridged
+to OTel. Added a `LoggingHandler` bridge in `app/otel.py:configure()` so stdlib logs flow to
+the `otlp.logs` input. Decide during extraction whether the bridge is a skill default or opt-in.
+
 ## Related
 
 - Blueprint: `~/.claude/docs/observability-harness.md`
